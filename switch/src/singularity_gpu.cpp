@@ -127,6 +127,25 @@ REXCVAR_DECLARE(bool, nfsmw_dk_borrado_z_aplazado);
 // for a query, so OcclusionPoll answers the ones still being counted instead of letting it wait for the GPU.
 std::atomic<bool> g_singularity_query_waited{false};
 
+REXCVAR_DEFINE_BOOL(singularity_oclusion_anterior, true, "Singularity",
+                    "When the game waits for an occlusion result the GPU has not counted yet, answer with that query's "
+                    "result from the previous frame (each object reuses its query every frame) instead of letting the "
+                    "render thread spin. Culling stays on; an object may appear one frame late");
+REXCVAR_DEFINE_BOOL(singularity_oclusion_ceder, true, "Singularity",
+                    "Each spin of the game's occlusion wait (game patch 4) yields the core to other threads (the game's "
+                    "audio thread)");
+
+// Game patch 4 (tools/switch/codegen/patch_singularity.py): called on every spin of sub_82DB5C90, Unreal's occlusion
+// result read with wait, while Direct3D's GetData answers "not yet".
+extern "C" void SingularityOcclusionWait() {
+  g_singularity_query_waited.store(true, std::memory_order_release);
+  if (REXCVAR_GET(singularity_oclusion_ceder)) {
+#if defined(__SWITCH__)
+    svcSleepThread(0);  // yield to the other threads of this core's priority
+#endif
+  }
+}
+
 REXCVAR_DEFINE_INT32(singularity_auto_captura_s, 5, "Singularity",
                      "Cada cuantos segundos se guarda una captura reducida (640x360) en capturas/auto_NNNN.bmp; 0 = nunca");
 REXCVAR_DEFINE_INT32(singularity_auto_volcado_primero_s, 120, "Singularity",
@@ -743,10 +762,10 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       destinos_->EstadisticasOclusion(q);
       REXLOG_INFO("[gpu] occlusion: {} queries counted on the GPU, {} without room; {} answered with their count ({} "
                   "of them hidden, {:.1f} ms after their end on average, {} samples, max {}), {} answered visible when "
-                  "the game waited for them, {} after waiting too long, {} waiting",
+                  "the game waited for them, {} after waiting too long, {} waiting; {} answered from the previous frame",
                   q[0], q[1], queries_answered_, queries_hidden_,
                   queries_answered_ ? double(queries_wait_us_) / 1000.0 / double(queries_answered_) : 0.0, q[3], q[4],
-                  queries_not_waited_, queries_timed_out_, pending_queries_.size());
+                  queries_not_waited_, queries_timed_out_, pending_queries_.size(), queries_from_previous_);
     }
     // Which unknown vertex shaders the skipped draws had, the most frequent first, with one draw's state each.
     std::vector<std::pair<uint64_t, uint64_t>> skips(unknown_vs_skips_.begin(), unknown_vs_skips_.end());
@@ -2512,12 +2531,26 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       const PendingQuery& q = pending_queries_[done];
       uint64_t samples = 0;
       const bool counted = destinos_ && destinos_->ResultadoOclusion(q.ticket, samples);
+      // singularity_oclusion_anterior: the game is waiting and this query's previous result is known: answer with it.
+      const auto anterior = game_waits && !counted && REXCVAR_GET(singularity_oclusion_anterior)
+                                ? previous_query_result_.find(q.address & ~0x3Fu)
+                                : previous_query_result_.end();
+      const bool from_previous = anterior != previous_query_result_.end();
       const bool answer_now = game_waits && now - q.ended >= std::chrono::milliseconds(no_wait_ms);
-      if (!counted && now - q.ended < limit && !answer_now) {
+      if (!counted && !from_previous && now - q.ended < limit && !answer_now) {
         break;  // the later ones are in later work
       }
       auto* counts = memory_->TranslatePhysical<xenos::xe_gpu_depth_sample_counts*>(q.address);
-      const uint32_t n = counted ? uint32_t(std::min<uint64_t>(samples, INT32_MAX)) : uint32_t(kFakeSampleCount);
+      const uint32_t n = counted          ? uint32_t(std::min<uint64_t>(samples, INT32_MAX))
+                         : from_previous ? anterior->second
+                                         : uint32_t(kFakeSampleCount);
+      if (counted) previous_query_result_[q.address & ~0x3Fu] = n;
+      if (from_previous) {
+        ++queries_from_previous_;
+        // Its real count, when it comes, is not written over the answer (the query may be reused by then), but it
+        // still becomes the previous result for the next frame.
+        late_query_tickets_.push_back({q.address & ~0x3Fu, q.ticket});
+      }
       counts->Total_A = n;
       counts->Total_B = 0;
       counts->ZFail_A = 0;
@@ -2527,7 +2560,8 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       counts->ZPass_B = 0;
       std::atomic_thread_fence(std::memory_order_release);
       counts->ZPass_A = n;  // the mark goes last
-      if (!counted) {
+      if (from_previous) {
+      } else if (!counted) {
         ++(now - q.ended < limit ? queries_not_waited_ : queries_timed_out_);
       } else {
         ++queries_answered_;
@@ -2536,7 +2570,23 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       }
     }
     pending_queries_.erase(pending_queries_.begin(), pending_queries_.begin() + done);
+    // The real counts of queries answered from the previous frame: kept as the previous result for the next one.
+    for (size_t i = 0; i < late_query_tickets_.size();) {
+      uint64_t samples = 0;
+      if (destinos_ && destinos_->ResultadoOclusion(late_query_tickets_[i].second, samples)) {
+        previous_query_result_[late_query_tickets_[i].first] = uint32_t(std::min<uint64_t>(samples, INT32_MAX));
+        late_query_tickets_[i] = late_query_tickets_.back();
+        late_query_tickets_.pop_back();
+      } else {
+        ++i;
+      }
+    }
+    if (late_query_tickets_.size() > 4096) late_query_tickets_.erase(late_query_tickets_.begin(), late_query_tickets_.begin() + 2048);
+    if (previous_query_result_.size() > 65536) previous_query_result_.clear();
   }
+  std::unordered_map<uint32_t, uint32_t> previous_query_result_;  // query address -> its last counted samples
+  std::vector<std::pair<uint32_t, uint64_t>> late_query_tickets_;
+  uint64_t queries_from_previous_ = 0;
 
   rex::ui::WindowedAppContext* app_context_ = nullptr;
   std::unique_ptr<rex::ui::GraphicsProvider> provider_;

@@ -1,0 +1,41 @@
+From e86fe44e11b4c64c3de439a99da1f90ea9b611db Mon Sep 17 00:00:00 2001
+From: Oleksii Horchynskyi <pan.alexeu@gmail.com>
+Date: Mon, 9 Nov 2026 15:47:00 +0200
+Subject: [PATCH] deko3d: the background shader compiler below the game's
+ priority, on any core
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CGstJFihyJYNUGR3QC7gUu
+---
+ src/ui/deko3d/compilador.cpp | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/src/ui/deko3d/compilador.cpp b/src/ui/deko3d/compilador.cpp
+index 9e913c3..6c833c2 100644
+--- a/src/ui/deko3d/compilador.cpp
++++ b/src/ui/deko3d/compilador.cpp
+@@ -16,7 +16,11 @@ namespace rex::deko3d {
+ 
+ namespace {
+ constexpr size_t kPila = 8u << 20;
+-constexpr int kPrioridad = 0x3B;
++// Below the game's threads (0x3B): a shader missing from the DKSH cache is compiled with the CPU the game leaves free,
++// on any core. At 0x3B and pinned to core 0 it took up to 68% of that core from the game's render and audio threads
++// (Singularity's city: the sound crackled while 17 variants compiled).
++constexpr int kPrioridad = 0x3C;
++constexpr u32 kNucleos = 0x7;
+ 
+ // A shader that uses what the game's do (a UBO, a texture, a dynamic loop), to know at start that uam works here.
+ constexpr char kAutoprueba[] = R"(#version 460
+@@ -80,7 +84,7 @@ struct Compilador::Datos {
+ 
+ Compilador::Compilador() : datos_(std::make_unique<Datos>()) {
+   if (R_FAILED(threadCreate(&datos_->hilo, Datos::Bucle, datos_.get(), nullptr, kPila, kPrioridad, -2)) ||
+-      R_FAILED(threadStart(&datos_->hilo))) {
++      R_FAILED(svcSetThreadCoreMask(datos_->hilo.handle, -1, kNucleos)) || R_FAILED(threadStart(&datos_->hilo))) {
+     Fatal("[dk] no se pudo crear el hilo de compilacion de shaders (pila de 8 MiB, prioridad 0x%X)", kPrioridad);
+   }
+ }
+-- 
+2.43.0
+
