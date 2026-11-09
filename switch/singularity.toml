@@ -14,6 +14,10 @@ singularity_patch_no_tiling = true
 # gears2-nx 1.1.0's 540p mode, plus a 960x540 video mode for the UI and back buffer.
 singularity_resolution = 540
 
+# Never compile a shader variant while playing: one missing from the DKSH cache keeps drawing with the general
+# variant (the same image). A runtime compile took a game core for 30+ s and the sound crackled.
+nfsmw_dk_compilar_variantes = false
+
 # Skip the depth prepass (gears2-nx's rule): drawn, the base pass's depth misses it by a rounding difference between
 # two separately compiled vertex shaders, and the world turns red.
 singularity_sin_prepaso_z = true

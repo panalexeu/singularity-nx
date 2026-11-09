@@ -1,0 +1,52 @@
+From 2770810ad734cbefb3317a7a95cfff0f8fa4d18a Mon Sep 17 00:00:00 2001
+From: Oleksii Horchynskyi <pan.alexeu@gmail.com>
+Date: Mon, 9 Nov 2026 17:19:16 +0200
+Subject: [PATCH] deko3d: nfsmw_dk_compilar_variantes = false keeps drawing
+ with the general variant instead of compiling a missing one
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CGstJFihyJYNUGR3QC7gUu
+---
+ src/x360/deko/dibujos.cpp | 12 ++++++++++--
+ 1 file changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/src/x360/deko/dibujos.cpp b/src/x360/deko/dibujos.cpp
+index e09d8b3..d9586f9 100644
+--- a/src/x360/deko/dibujos.cpp
++++ b/src/x360/deko/dibujos.cpp
+@@ -93,6 +93,12 @@ REXCVAR_DECLARE(bool, nfsmw_dk_perfil_barrera);
+ REXCVAR_DECLARE(bool, nfsmw_dk_perfil_variantes);
+ REXCVAR_DECLARE(bool, nfsmw_nativo_ps_solo_alfa);
+ // deko3d only.
++REXCVAR_DEFINE_BOOL(nfsmw_dk_compilar_variantes, true, "Deko3d",
++                    "With nfsmw_dk_compilar_en_fondo: a shader variant missing from the DKSH cache is compiled on the "
++                    "worker. false = never: the general variant (every interpolator; the library pixel shader) keeps "
++                    "drawing it, the same image. In Singularity one vertex shader compiled for 30+ s on a game core "
++                    "and the sound crackled meanwhile. Still logged, for tools/switch/shaders/dksh_variants.py")
++    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+ REXCVAR_DEFINE_BOOL(nfsmw_dk_compilar_en_fondo, true, "NFSMW",
+                     "deko3d: la variante exacta de un vertex shader que no esta en la cache se compila en segundo "
+                     "plano; mientras, dibuja la que conserva todos los interpoladores. false = se compila en el acto")
+@@ -964,7 +970,8 @@ const DkShader* RenderDk::ShaderDe(const EntradaShader& entrada, uint32_t especi
+     if (en_fondo_.emplace(h, true).second) {
+       // Each one logged (once per session): the variants the PC tool's cache lacks, to add them there.
+       REXLOG_INFO("[deko3d] {} no esta en la cache: se compila en segundo plano (huella {:016X})", nombre, info.huella);
+-      const deko::GlslDeko g = deko::SpirvAGlsl(entrada.spirv, espec, variante);
++      static const bool compilar = REXCVAR_GET(nfsmw_dk_compilar_variantes);
++      const deko::GlslDeko g = compilar ? deko::SpirvAGlsl(entrada.spirv, espec, variante) : deko::GlslDeko{};
+       if (!g.glsl.empty()) {
+         std::weak_ptr<Bandeja> bandeja = bandeja_;
+         compilador_.Encolar(true, g.glsl, [bandeja, clave_cache](deko::Compilador::Resultado r) {
+@@ -987,7 +994,8 @@ const DkShader* RenderDk::ShaderDe(const EntradaShader& entrada, uint32_t especi
+     const uint64_t h = XXH3_64bits(&clave_cache, sizeof(clave_cache));
+     if (en_fondo_.emplace(h, true).second) {
+       REXLOG_INFO("[deko3d] {} no esta en la cache: se compila en segundo plano (huella {:016X})", nombre, info.huella);
+-      deko::GlslDeko g = deko::SpirvAGlsl(espirv, espec, kTodasLasSalidas);
++      static const bool compilar = REXCVAR_GET(nfsmw_dk_compilar_variantes);
++      deko::GlslDeko g = compilar ? deko::SpirvAGlsl(espirv, espec, kTodasLasSalidas) : deko::GlslDeko{};
+       if (!g.glsl.empty()) {
+         if (variante_ps & kVarianteZTemprana) {
+           DeclararZTemprana(g.glsl);
+-- 
+2.43.0
+

@@ -209,11 +209,14 @@ int main(int argc, char** argv) try {
   if (argc < 3) {
     std::fprintf(stderr,
                  "uso: ds_dksh <gow2_shaders.dslib> <cache de salida> [--contenedores DIR]"
-                 " [--glsl DIR] [--informe FICHERO.tsv] [--variantes FICHERO] [--hilos N] [--limite SEGUNDOS]\n");
+                 " [--glsl DIR] [--informe FICHERO.tsv] [--variantes FICHERO] [--solo-variantes 1] [--hilos N] [--limite SEGUNDOS]\n");
     return 1;
   }
   const fs::path biblioteca_ruta = argv[1], salida = argv[2];
   fs::path contenedores, carpeta_glsl, informe, variantes;
+  // --solo-variantes 1: only the --variantes list, not every shader's default variants. A small cache the console
+  // loads as its own (cache/nfsmw_dksh.bin next to the NRO), without rebuilding the full one (hours).
+  bool solo_variantes = false;
   // Processes at once (default: every core) and the time one variant may take before it is killed.
   unsigned hilos = std::max(1u, std::thread::hardware_concurrency());
   double limite_s = 120;
@@ -225,6 +228,7 @@ int main(int argc, char** argv) try {
     else if (o == "--variantes") variantes = argv[i + 1];
     else if (o == "--hilos") hilos = std::max(1, std::atoi(argv[i + 1]));
     else if (o == "--limite") limite_s = std::max(1.0, std::atof(argv[i + 1]));
+    else if (o == "--solo-variantes") solo_variantes = std::atoi(argv[i + 1]) != 0;
     else throw std::runtime_error("opcion desconocida: " + o);
   }
 
@@ -300,6 +304,7 @@ int main(int argc, char** argv) try {
   // --variantes: the variants the console asked for and this cache lacked (the renderer logs each one it compiles in
   // the background: "VS n891 00000000 0000001F ... (huella 1234...)"), one per line: huella, specialization value and
   // variant, in hex. A vertex shader's variant is the interpolators it keeps; a pixel shader's, 1 for early depth.
+  if (solo_variantes) trabajo.clear();
   if (!variantes.empty()) {
     std::map<uint64_t, size_t> por_huella;
     for (size_t i = 0; i < shaders.size(); ++i) por_huella.emplace(rex::deko3d::HuellaSpirv(shaders[i].spirv), i);
