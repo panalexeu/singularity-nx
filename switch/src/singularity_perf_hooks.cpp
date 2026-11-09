@@ -18,10 +18,13 @@
 
 #include <atomic>
 #include <chrono>
+#include <bit>
+#include <cmath>
 #include <cstring>
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
+#include <rex/memory/utils.h>
 
 #if defined(__SWITCH__)
 #include <switch.h>
@@ -96,4 +99,40 @@ REX_HOOK_RAW(sub_829E2290) {
     return;
   }
   if (const uint32_t n = ctx.r5.u32) std::memset(base + ctx.r3.u32, int(ctx.r4.u32 & 0xFF), n);
+}
+
+// sub_828EDF78  a state-variable filter of the game's audio mixer, ~20% of its audio thread in busy scenes. Its
+//               parameters at r3: +0 input samples, +4 output samples, +8 / +12 pointers to the low and band states,
+//               +16 sample count, +24 mode (0 low-pass, 1 band-pass, 2 high-pass, else notch = low + high), +28 the
+//               frequency coefficient, +32 the damping. Per sample, as the PowerPC code (each fused multiply-add
+//               rounded once to single precision): high = (x - low) - damping * band; band += high * f; low += band * f.
+//               Called only through a table (no direct call sites), so no inlining hides it.
+REXCVAR_DEFINE_BOOL(singularity_audio_filtro_nativo, true, "Singularity",
+                    "The game's audio state-variable filter (sub_828EDF78) as native code");
+
+REX_EXTERN(__imp__sub_828EDF78);
+REX_HOOK_RAW(sub_828EDF78) {
+  if (!REXCVAR_GET(singularity_audio_filtro_nativo)) {
+    __imp__sub_828EDF78(ctx, base);
+    return;
+  }
+  auto u32 = [&](uint32_t a) { return rex::memory::load_and_swap<uint32_t>(base + a); };
+  auto lf = [&](uint32_t a) { return std::bit_cast<float>(u32(a)); };
+  auto sf = [&](uint32_t a, float v) { rex::memory::store_and_swap<uint32_t>(base + a, std::bit_cast<uint32_t>(v)); };
+  const uint32_t p = ctx.r3.u32;
+  const uint32_t src = u32(p + 0), dst = u32(p + 4), p_low = u32(p + 8), p_band = u32(p + 12), n = u32(p + 16);
+  const uint32_t mode = u32(p + 24);
+  const float f = lf(p + 28), q = lf(p + 32);
+  float low = lf(p_low), band = lf(p_band);
+  for (uint32_t i = 0; i < n; ++i) {
+    const float x = lf(src + i * 4);
+    const float d = x - low;                       // fsubs
+    const float high = std::fmaf(-q, band, d);     // fnmsubs: -(q * band - d)
+    band = std::fmaf(high, f, band);               // fmadds
+    low = std::fmaf(band, f, low);                 // fmadds
+    const float out = mode == 0 ? low : mode == 1 ? band : mode == 2 ? high : low + high;
+    sf(dst + i * 4, out);
+  }
+  sf(p_low, low);
+  sf(p_band, band);
 }
