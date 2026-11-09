@@ -25,6 +25,7 @@ add_executable(singularity
     src/singularity_cpu.cpp
     src/singularity_guards.cpp
     src/singularity_game_patches.cpp
+    src/singularity_perf_hooks.cpp
     ${SINGULARITY_SHADER_TOOLS}/ds_shader_library.cpp
 )
 singularity_setup_target(singularity)

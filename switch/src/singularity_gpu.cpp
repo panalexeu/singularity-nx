@@ -131,18 +131,14 @@ REXCVAR_DEFINE_BOOL(singularity_oclusion_anterior, true, "Singularity",
                     "When the game waits for an occlusion result the GPU has not counted yet, answer with that query's "
                     "result from the previous frame (each object reuses its query every frame) instead of letting the "
                     "render thread spin. Culling stays on; an object may appear one frame late");
-REXCVAR_DEFINE_BOOL(singularity_oclusion_ceder, true, "Singularity",
-                    "Each spin of the game's occlusion wait (game patch 4) yields the core to other threads (the game's "
-                    "audio thread)");
 
-// Game patch 4 (tools/switch/codegen/patch_singularity.py): called on every spin of sub_82DB5C90, Unreal's occlusion
-// result read with wait, while Direct3D's GetData answers "not yet".
+// Called by the GetData hook (singularity_perf_hooks.cpp) while Direct3D answers "not yet": the game is waiting.
+// The ring thread's wake-up (set by RingGraphicsSystem): a waiting game is answered now, not after its next sleep.
+std::atomic<void (*)()> g_singularity_wake_ring{nullptr};
+
 extern "C" void SingularityOcclusionWait() {
-  g_singularity_query_waited.store(true, std::memory_order_release);
-  if (REXCVAR_GET(singularity_oclusion_ceder)) {
-#if defined(__SWITCH__)
-    svcSleepThread(0);  // yield to the other threads of this core's priority
-#endif
+  if (!g_singularity_query_waited.exchange(true, std::memory_order_acq_rel)) {
+    if (auto wake = g_singularity_wake_ring.load(std::memory_order_acquire)) wake();
   }
 }
 
@@ -278,8 +274,16 @@ uint32_t ConstantBase(uint32_t type_index) {
 
 class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
  public:
-  RingGraphicsSystem() : registers_(kRegisterCount, 0) {}
-  ~RingGraphicsSystem() override { Shutdown(); }
+  RingGraphicsSystem() : registers_(kRegisterCount, 0) {
+    instancia_ = this;
+    g_singularity_wake_ring.store(+[] { if (instancia_) instancia_->ring_cv_.notify_one(); }, std::memory_order_release);
+  }
+  ~RingGraphicsSystem() override {
+    g_singularity_wake_ring.store(nullptr, std::memory_order_release);
+    Shutdown();
+    instancia_ = nullptr;
+  }
+  static inline RingGraphicsSystem* instancia_ = nullptr;
 
   X_STATUS SetupPresentation(rex::ui::WindowedAppContext* app_context) override {
 #if SINGULARITY_DEKO3D
@@ -618,6 +622,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
         ring_dormido_.store(true, std::memory_order_seq_cst);
         ring_cv_.wait_for(lock, std::chrono::milliseconds(pending_queries_.empty() ? 4 : 1), [&] {
           return !active_.load(std::memory_order_acquire) ||
+                 (!pending_queries_.empty() && g_singularity_query_waited.load(std::memory_order_acquire)) ||
                  write_pointer_.load(std::memory_order_seq_cst) != read ||
                  ring_generation_.load(std::memory_order_acquire) != generation;
         });
@@ -655,6 +660,10 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       const uint32_t writeback_lote = read_pointer_writeback_.load(std::memory_order_acquire);
       uint32_t publicado = read;
       while (reader.Pending()) {
+        // The game is waiting for an occlusion result: answer it between packets, not after the whole batch.
+        if (!pending_queries_.empty() && g_singularity_query_waited.load(std::memory_order_relaxed)) {
+          OcclusionPoll();
+        }
         if (!Packet(reader, 0)) {
           break;  // partial packet: the rest comes with the next CP_RB_WPTR
         }
