@@ -1,0 +1,47 @@
+From bd59c46b41e1e3325f3a2d6407e696154ee0dfd2 Mon Sep 17 00:00:00 2001
+From: Oleksii Horchynskyi <pan.alexeu@gmail.com>
+Date: Mon, 9 Nov 2026 22:34:36 +0200
+Subject: [PATCH] deko3d textures: linear (run-time written) textures checked
+ every frame (nfsmw_dk_texturas_lineales_siempre)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CGstJFihyJYNUGR3QC7gUu
+---
+ src/x360/deko/texturas.cpp | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/src/x360/deko/texturas.cpp b/src/x360/deko/texturas.cpp
+index f64ff8a..e681e38 100644
+--- a/src/x360/deko/texturas.cpp
++++ b/src/x360/deko/texturas.cpp
+@@ -22,6 +22,10 @@
+ #include <rex/x360/deko/render.h>
+ #include <rex/x360/xenos.h>
+ 
++REXCVAR_DEFINE_BOOL(nfsmw_dk_texturas_lineales_siempre, true, "Deko3d",
++                    "Linear (untiled) textures, the ones a game writes at run time, are checked for changes every frame "
++                    "instead of at a growing interval (up to 32 frames): text glyphs written when first needed showed "
++                    "blank for up to ~1.3 s");
+ REXCVAR_DEFINE_BOOL(nfsmw_dk_16_16_fijo, false, "NFSMW",
+                     "deko3d: un destino k_16_16 (coma fija, -32..32) leido como textura k_16_16 da los bits como entero "
+                     "normalizado (o el valor / 32 con signo) en vez del valor tal cual. Apagado: Gears of War 2 lee su "
+@@ -897,8 +901,15 @@ uint32_t RenderDk::PrepararTextura(const uint32_t* f, uint16_t tipo_shader, uint
+     const uint64_t extension = (capas - 1) * zancada_cara + extension_capa;
+     if (dir_base + extension <= kMemoriaFisica) {
+       // At the maximum interval, from 32 to 39 depending on the texture, so they do not coincide.
++      // nfsmw_dk_texturas_lineales_siempre: a linear (untiled) texture is one the game writes at run time (cooked
++      // assets are tiled): checked every frame. Singularity's Scaleform glyph atlas (k_8 1024x1024, the only linear
++      // texture of a frame) got a letter written when first needed; checked every 32-39 frames, the new letters
++      // stayed blank for up to ~1.3 s.
++      static const bool lineales_siempre = REXCVAR_GET(nfsmw_dk_texturas_lineales_siempre);
+       auto sin_cambios = [&] {
+-        textura.intervalo = textura.nivel_vacio ? 1 : std::min<uint32_t>(textura.intervalo * 2, 32);
++        textura.intervalo = textura.nivel_vacio || (lineales_siempre && !mosaico)
++                                ? 1
++                                : std::min<uint32_t>(textura.intervalo * 2, 32);
+         textura.siguiente = fotograma_ + textura.intervalo + (textura.intervalo == 32 ? (clave >> 7) & 7 : 0);
+         return listo();
+       };
+-- 
+2.43.0
+
