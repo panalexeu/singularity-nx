@@ -77,6 +77,7 @@ Game patches (applied by `tools/switch/codegen.sh`):
 | 1 `patch_singularity.py` | `GUseTilingMode` (`0x83917A88`) set to 0 in `sub_82DAD680` | The scene is drawn once, not in two MSAA tiles (red bottom fixed) |
 | 3 `patch_scene_resolution.py` | `sub_82DBFA80`'s hard-coded 720 height and 1280 width cap become 540 / 960 (from gears2-nx 1.1.0) | The 540p mode |
 | ARM fixes, CPU passes | From the Gears of War 2 PC port and gears2-nx | Correct on ARM's memory model, 25-30% less CPU per frame |
+| Clear emulation (`switch/src/singularity_gpu.cpp`) | Direct3D's clear rectangle takes its color from its vertices; the color written through the depth path is computed without float overflow | Projector slides in their real colors (they were red) |
 | Perf hooks (`switch/src/singularity_perf_hooks.cpp`, from gears2-nx) | Direct3D's GPU and occlusion-query waits sleep instead of spinning; memcpy, memset and the audio mixer's state-variable filter (`sub_828EDF78`) run as native code | The spins took a core from the audio thread (crackling); the filter was 26% of the audio thread |
 
 rexglue-sdk-nx patches (`patches/rexglue-sdk-nx/`):
@@ -88,6 +89,8 @@ rexglue-sdk-nx patches (`patches/rexglue-sdk-nx/`):
 | `0003` | The background shader compiler ran pinned to one core | It may now use any core (and runs below the game where the system allows it) |
 | `0004` | Waits on several objects polled every 1 ms | The game's audio thread woke up to 1 ms late for every 5.33 ms block of sound and missed blocks (crackling) |
 | `0005` | A shader variant missing from the cache was compiled while playing | Optional now (`nfsmw_dk_compilar_variantes`) |
+| `0006` | Textures the game writes at run time (the font atlas) were rechecked only every few frames | Letters were missing for a moment when text first appeared |
+| `0007` | A stencil-only clear was remembered as a depth clear, so the full depth clear after it was skipped | World objects in front of you cut away parts of your gun |
 
 `overrides.toml` declares 277 function entry points the codegen analyzer misses (see singularity-recomp).
 

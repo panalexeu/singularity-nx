@@ -1,0 +1,52 @@
+From 92d8b371e62fdbce35966d99dc26ff913f5836dc Mon Sep 17 00:00:00 2001
+From: Oleksii Horchynskyi <pan.alexeu@gmail.com>
+Date: Mon, 9 Nov 2026 23:38:53 +0200
+Subject: [PATCH] deko3d depth clears: a stencil-only clear is not remembered
+ as a depth clear
+
+The repeated-clear skip remembered a stencil-only clear (depth untouched) as
+"the depth holds this value". Singularity's full depth clear before the
+first-person weapon follows one with the same value and no draw between, so it
+was skipped: the weapon was drawn against the world's depth and world objects
+in front of it cut it away (where they overlap it on screen, so it came and
+went while walking).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CGstJFihyJYNUGR3QC7gUu
+---
+ src/x360/deko/destinos.cpp | 13 ++++++++-----
+ 1 file changed, 8 insertions(+), 5 deletions(-)
+
+diff --git a/src/x360/deko/destinos.cpp b/src/x360/deko/destinos.cpp
+index eb7741c..dd2209e 100644
+--- a/src/x360/deko/destinos.cpp
++++ b/src/x360/deko/destinos.cpp
+@@ -1410,17 +1410,20 @@ void RenderDk::BorrarProfundidad(const RegistrosCopia& reg, uint32_t pitch) {
+   SombraMinimoAntesDeBorrar(*profundidad);
+   profundidad->contenido_invalido = false;  // cleared: what a swap took away is no longer needed
+   const bool saltar_repetidos = REXCVAR_GET(nfsmw_nativo_saltar_borrados_repetidos);  // read each time: the game can switch it (ds2 safe mode)
++  // Bit 30 of RB_COPY_CONTROL, unused by the Xenos: a stencil-only clear asked for by the game's clear emulation
++  // (Direct3D's clear quad with depth writes off). Gears of War 2 clears the stencil after each light; clearing the
++  // depth with it wiped the scene's depth in the middle of the frame. A full clear still pending stays full.
++  const bool solo_estencil = (reg.rb_copy_control >> 30) & 0x1;
+   EstadoBorrado& previo = borrado_previo_[profundidad->serie];
+   if (saltar_repetidos && previo.dibujos == dibujados_ && previo.valor == reg.rb_depth_clear) {
+     ++borrados_saltados_;
+     return;
+   }
+-  previo = {reg.rb_depth_clear, dibujados_};
++  // Only a full clear is remembered as "the depth holds this value". A stencil-only one left the depth as it was: as
++  // remembered, Singularity's full depth clear right after it (same value, no draw between) was skipped as a repeat,
++  // the first-person weapon was drawn against the world's depth and world objects in front of it cut it away.
++  previo = solo_estencil ? EstadoBorrado{} : EstadoBorrado{reg.rb_depth_clear, dibujados_};
+   ++borrados_profundidad_;
+-  // Bit 30 of RB_COPY_CONTROL, unused by the Xenos: a stencil-only clear asked for by the game's clear emulation
+-  // (Direct3D's clear quad with depth writes off). Gears of War 2 clears the stencil after each light; clearing the
+-  // depth with it wiped the scene's depth in the middle of the frame. A full clear still pending stays full.
+-  const bool solo_estencil = (reg.rb_copy_control >> 30) & 0x1;
+   profundidad->borrado_solo_estencil =
+       solo_estencil && (!profundidad->borrado_pendiente || profundidad->borrado_solo_estencil);
+   if (solo_estencil && !profundidad->borrado_pendiente) {
+-- 
+2.43.0
+

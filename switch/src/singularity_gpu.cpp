@@ -2102,7 +2102,10 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     }
     uint32_t aliased_depth[3] = {};
     uint32_t n_aliased = 0;
-    for (uint32_t i = 1; i < 4 && !depth_only; ++i) {
+    // Not for the vertex-color rectangle: its pixel shader (9 words, Direct3D's own) exports oC0 only, so the console
+    // writes nothing at targets 1-3. Their stale bases are usually 000, the scene's depth: reset there mid-frame (to
+    // FFFFFF00), parts of the first-person weapon drawn after it failed the depth test and the world showed through.
+    for (uint32_t i = 1; i < 4 && !depth_only && !vertex_color; ++i) {
       const uint32_t b = base.rb_color_info[i] & 0xFFF;
       if (!((mask >> (i * 4)) & 0xF) || (c0_written && b == c0_base)) continue;
       if (std::find(aliased_depth, aliased_depth + n_aliased, b) != aliased_depth + n_aliased) continue;
