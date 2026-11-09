@@ -59,6 +59,7 @@ Settings (`singularity.toml`):
 | `singularity_resolution = 540` | 960x540 instead of 1280x720, about 56% of the pixel work |
 | `singularity_patch_no_tiling = true` | Without it the bottom of the screen is red |
 | `singularity_sin_prepaso_z`, `singularity_sin_prepaso_enmascarado` | Without them the world turns red, and windows, rubbish and debris show a staircase of old frames |
+| `nfsmw_dk_compilar_variantes = false` | Never compiles a shader while playing (the general variant draws the same image); a runtime compile took a CPU core for 30+ s and the sound crackled |
 
 Game patches (applied by `tools/switch/codegen.sh`):
 
@@ -67,6 +68,7 @@ Game patches (applied by `tools/switch/codegen.sh`):
 | 1 `patch_singularity.py` | `GUseTilingMode` (`0x83917A88`) set to 0 in `sub_82DAD680` | The scene is drawn once, not in two MSAA tiles (red bottom fixed) |
 | 3 `patch_scene_resolution.py` | `sub_82DBFA80`'s hard-coded 720 height and 1280 width cap become 540 / 960 (from gears2-nx 1.1.0) | The 540p mode |
 | ARM fixes, CPU passes | From the Gears of War 2 PC port and gears2-nx | Correct on ARM's memory model, 25-30% less CPU per frame |
+| Perf hooks (`switch/src/singularity_perf_hooks.cpp`, from gears2-nx) | Direct3D's GPU and occlusion-query waits sleep instead of spinning; memcpy, memset and the audio mixer's state-variable filter (`sub_828EDF78`) run as native code | The spins took a core from the audio thread (crackling); the filter was 26% of the audio thread |
 
 rexglue-sdk-nx patches (`patches/rexglue-sdk-nx/`):
 
@@ -74,6 +76,9 @@ rexglue-sdk-nx patches (`patches/rexglue-sdk-nx/`):
 |---|---|---|
 | `0001` | gears2-nx's 49 SDK patches for Unreal Engine 3 on deko3d | Without them the game does not run or draws a broken image |
 | `0002` | Occlusion results were read only after the frame's whole GPU work finished | The render thread waited ~15% of its time for them; now ~2% |
+| `0003` | The background shader compiler ran pinned to one core | It may now use any core (and runs below the game where the system allows it) |
+| `0004` | Waits on several objects polled every 1 ms | The game's audio thread woke up to 1 ms late for every 5.33 ms block of sound and missed blocks (crackling) |
+| `0005` | A shader variant missing from the cache was compiled while playing | Optional now (`nfsmw_dk_compilar_variantes`) |
 
 `overrides.toml` declares 277 function entry points the codegen analyzer misses (see singularity-recomp).
 
