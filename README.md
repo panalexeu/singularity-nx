@@ -46,7 +46,16 @@ Requirements: a Switch with Atmosphere running homebrew in title takeover mode (
    tools/switch/build-native.sh
    ```
 
-6. Copy to `sdmc:/switch/singularity/`: `out/build/switch-native/singularity.nro`, `switch/singularity.toml`, `out/shaders/singularity_shaders.dslib`, `out/shaders/shadercache_dksh.bin` and your `singularity-extract/` folder. Launch the NRO from the homebrew menu in title takeover mode; logs go to `logs/` next to it.
+6. Optional, about +2-3 fps in big fights: turn off the characters' dynamic shadows in the game's own config (the NRO accepts the edited file: it recomputes the config's hash at startup). Other `[SystemSettings]` keys work the same way (`--list` shows them).
+
+   ```bash
+   python3 tools/switch/coalesced_settings.py singularity-extract/RvGame/CookedXenon/Coalesced_INT.bin \
+     out/Coalesced_INT.bin LightEnvironmentShadows=False
+   ```
+
+   Copy `out/Coalesced_INT.bin` over `singularity-extract/RvGame/CookedXenon/Coalesced_INT.bin` on the SD card.
+
+7. Copy to `sdmc:/switch/singularity/`: `out/build/switch-native/singularity.nro`, `switch/singularity.toml`, `out/shaders/singularity_shaders.dslib`, `out/shaders/shadercache_dksh.bin` and your `singularity-extract/` folder. Launch the NRO from the homebrew menu in title takeover mode; logs go to `logs/` next to it.
 
 ### Changes
 
