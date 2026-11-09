@@ -54,5 +54,6 @@ if(REXGLUE_PLATFORM_SWITCH)
     rexglue_switch_add_nro(singularity
         NAME "Singularity"
         AUTHOR "singularity-recomp"
-        VERSION "${SINGULARITY_VERSION}")
+        VERSION "${SINGULARITY_VERSION}"
+        ICON "${CMAKE_CURRENT_SOURCE_DIR}/icon.jpg")  # 256x256 baseline JPEG
 endif()
