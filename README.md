@@ -6,7 +6,7 @@
 
 Nintendo Switch port of the Xbox 360 version of Singularity (2010), built by static recompilation with rexglue-sdk and drawn by a native deko3d renderer.
 
-The project is fully vibecoded.
+The project is fully [vibecoded](https://share.google/jggfMaZ3mu2HW2Zd0).
 
 It reuses the Unreal Engine 3 on Switch stack of [gears2-nx](https://github.com/VasilkovND/gears2-nx) (Gears of War 2), adapted to Singularity. The PC version is [singularity-recomp](https://github.com/panalexeu/singularity-recomp). It needs your **legally owned and purchased** Xbox 360 copy: no game data or recompiled code is part of this repository.
 
