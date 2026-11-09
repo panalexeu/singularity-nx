@@ -1,0 +1,300 @@
+# Manual codegen overrides for Singularity (Xbox 360).
+#
+# Target executable (all addresses below are only valid for this file):
+#   default.xex SHA-256 d55636b840319ca8b6b9b6e8c4fc06981803787af61c331ea56eacfb7ad5dac5
+#   Title ID 415607EF, v1.0
+#
+# Add function entry points the analyzer misses here, e.g.:
+# [functions]
+# 0x82XXXXXX = {}
+
+[functions]
+# Tail-call ('b') targets the analyzer did not detect as function starts
+# (codegen run 1: "UnresolvedCall: target not in any function").
+# Declaring them as entry points lets the scanner discover their extents.
+0x8292A590 = {}  # from b at 0x836A2C78 -- dtor-like: sets vtable 0x820645D4 on this, tail-calls 0x8292A420
+0x82DE9C80 = {}  # from b at 0x82F6D13C -- checks several globals for -1, returns 0 if any
+0x828D7FE0 = {}  # from b at 0x828D7FEC -- verified: adjustor thunk (this += 8, tail-call 0x828D6A68)
+0x8297E608 = {}  # from b at 0x8297F0E8 -- stores r4 in first empty slot of array at this+20
+# Indirect-call targets (runtime "Call to invalid or unregistered function").
+# Reached only via function pointer / vtable, so static analysis cannot see them.
+0x8248CB60 = {}  # run 1 FATAL; in gap between sub_8248CB50 (ends 0x8248CB5C) and sub_8248CB80
+0x82A2E8D8 = {}  # run 2 FATAL; right after sub_82A2E8C4 (5-instr vtable forwarder), gap up to sub_82A2E9E8
+
+# Batch 1: data-section pointers into code gaps (tools/find_missing_functions.py, "strong").
+# Mostly leaf functions reached only via vtables (no .pdata entry), plus one .pdata
+# function the analyzer merged into its neighbour (0x829FE110).
+0x823CE520 = {}  # data ptr in .rdata @0x820CBFAC, refs=31
+0x823D5800 = {}  # data ptr in .rdata @0x820D1408, refs=53
+0x8244CF78 = {}  # data ptr in .rdata @0x82108E24, refs=1
+0x824867C0 = {}  # data ptr in .rdata @0x8211E410, refs=1
+0x824867D8 = {}  # data ptr in .rdata @0x8211E3A4, refs=1
+0x82489450 = {}  # data ptr in .rdata @0x82121390, refs=5
+0x8248D798 = {}  # data ptr in .rdata @0x8211FE7C, refs=19
+0x824911B8 = {}  # data ptr in .rdata @0x8211F1E0, refs=1
+0x824917F8 = {}  # data ptr in .rdata @0x8211F490, refs=1
+0x824A31F0 = {}  # data ptr in .rdata @0x8216A66C, refs=1
+0x82582F38 = {}  # data ptr in .rdata @0x821E13AC, refs=1
+0x82594AF8 = {}  # data ptr in .rdata @0x821EE95C, refs=1
+0x82594C30 = {}  # data ptr in .rdata @0x82066900, refs=11
+0x82594C40 = {}  # data ptr in .rdata @0x820668F8, refs=7
+0x82594F40 = {}  # data ptr in .rdata @0x821EED80, refs=1
+0x825A99E0 = {}  # data ptr in .rdata @0x8220258C, refs=1
+0x826F5C90 = {}  # data ptr in .rdata @0x820067F8, refs=3
+0x826F5DE0 = {}  # data ptr in .rdata @0x820069BC, refs=3
+0x826F5E08 = {}  # data ptr in .rdata @0x820069C0, refs=3
+0x826F5E30 = {}  # data ptr in .rdata @0x820069C4, refs=3
+0x826F5E58 = {}  # data ptr in .rdata @0x820069C8, refs=3
+0x826F6288 = {}  # data ptr in .rdata @0x820069FC, refs=2
+0x82781A00 = {}  # data ptr in .rdata @0x8203199C, refs=1
+0x82781A18 = {}  # data ptr in .rdata @0x820319A0, refs=1
+0x82799920 = {}  # data ptr in .rdata @0x820324D4, refs=2
+0x8279C438 = {}  # data ptr in .rdata @0x82032598, refs=1
+0x8279C488 = {}  # data ptr in .rdata @0x82032588, refs=1
+0x827A5B28 = {}  # data ptr in .rdata @0x82035B74, refs=1
+0x827A5BE8 = {}  # data ptr in .rdata @0x82035B7C, refs=1
+0x827A5C00 = {}  # data ptr in .rdata @0x82035B80, refs=1
+0x827AED70 = {}  # data ptr in .rdata @0x82036300, refs=5
+0x827AEE40 = {}  # data ptr in .rdata @0x82036350, refs=5
+0x827AF4A8 = {}  # data ptr in .rdata @0x82036200, refs=1
+0x827E44F0 = {}  # data ptr in .rdata @0x8203882C, refs=1
+0x827FA0A0 = {}  # data ptr in .rdata @0x8203A180, refs=1
+0x827FA0B8 = {}  # data ptr in .rdata @0x8203A168, refs=1
+0x827FA0D0 = {}  # data ptr in .rdata @0x8203A184, refs=1
+0x827FA0E8 = {}  # data ptr in .rdata @0x8203A16C, refs=1
+0x827FA100 = {}  # data ptr in .rdata @0x8203A170, refs=1
+0x827FA118 = {}  # data ptr in .rdata @0x8203A174, refs=1
+0x827FA130 = {}  # data ptr in .rdata @0x8203A178, refs=1
+0x827FA148 = {}  # data ptr in .rdata @0x8203A17C, refs=1
+0x82805A58 = {}  # data ptr in .rdata @0x8203AD58, refs=1
+0x82805BD8 = {}  # data ptr in .rdata @0x8203AD00, refs=1
+0x82827608 = {}  # data ptr in .rdata @0x82036E04, refs=3
+0x8282C888 = {}  # data ptr in .rdata @0x8203BB20, refs=1
+0x82842F80 = {}  # data ptr in .rdata @0x8203CBD4, refs=1
+0x8286F6C8 = {}  # data ptr in .rdata @0x8203E0C8, refs=1
+0x82874F48 = {}  # data ptr in .rdata @0x8203E450, refs=1
+0x828D8C28 = {}  # data ptr in .rdata @0x82042F74, refs=1
+0x828DB9A0 = {}  # data ptr in .rdata @0x82043158, refs=1
+0x828DF908 = {}  # data ptr in .rdata @0x82043274, refs=5
+0x828DF910 = {}  # data ptr in .rdata @0x820432A0, refs=5
+0x828DF918 = {}  # data ptr in .rdata @0x820432A4, refs=5
+0x828DF920 = {}  # data ptr in .rdata @0x820432AC, refs=1
+0x828DF930 = {}  # data ptr in .rdata @0x82043294, refs=5
+0x828DF938 = {}  # data ptr in .rdata @0x82043268, refs=5
+0x828DF940 = {}  # data ptr in .rdata @0x82043260, refs=3
+0x828E4640 = {}  # data ptr in .rdata @0x82043264, refs=5
+0x828E4648 = {}  # data ptr in .rdata @0x8204326C, refs=5
+0x828E4650 = {}  # data ptr in .rdata @0x8204363C, refs=1
+0x828E4660 = {}  # data ptr in .rdata @0x820435F0, refs=2
+0x828E48E8 = {}  # data ptr in .rdata @0x82043284, refs=5
+0x828E48F0 = {}  # data ptr in .rdata @0x820436FC, refs=1
+0x828E4900 = {}  # data ptr in .rdata @0x82043628, refs=2
+0x828E4908 = {}  # data ptr in .rdata @0x8204327C, refs=5
+0x828E4910 = {}  # data ptr in .rdata @0x8204329C, refs=5
+0x828E4918 = {}  # data ptr in .rdata @0x82043278, refs=5
+0x828F6380 = {}  # data ptr in .rdata @0x82044574, refs=1
+0x828F6EF0 = {}  # data ptr in .rdata @0x8204450C, refs=1
+0x8290A170 = {}  # data ptr in .rdata @0x82049854, refs=2
+0x8292CE58 = {}  # data ptr in .rdata @0x8206467C, refs=1
+0x8293C950 = {}  # data ptr in .rdata @0x82064BD4, refs=1
+0x829404C8 = {}  # data ptr in .rdata @0x82065014, refs=2
+0x82972248 = {}  # data ptr in .rdata @0x82065CE4, refs=1
+0x82989950 = {}  # data ptr in .rdata @0x82066A1C, refs=2
+0x829E21E0 = {}  # data ptr in .pdata @0x82335448, refs=1
+0x829E2230 = {}  # data ptr in .pdata @0x82335450, refs=1
+0x829E2900 = {}  # data ptr in .pdata @0x82335460, refs=1
+0x829E294C = {}  # data ptr in .pdata @0x82335468, refs=1
+0x829E3410 = {}  # data ptr in .pdata @0x82335498, refs=1
+0x829E36A8 = {}  # data ptr in .pdata @0x823354A0, refs=1
+0x829FE110 = {}  # data ptr in .pdata @0x82335F48, refs=1
+0x82A2E700 = {}  # data ptr in .rdata @0x8206E474, refs=1
+0x82A2E850 = {}  # data ptr in .rdata @0x8206E480, refs=1
+0x82B1C3B8 = {}  # data ptr in .rdata @0x8207CB60, refs=2
+0x82B1C408 = {}  # data ptr in .rdata @0x8207CB68, refs=1
+0x82B566C0 = {}  # data ptr in .rdata @0x82081544, refs=13
+0x82B688E8 = {}  # data ptr in .rdata @0x8208BF4C, refs=1
+0x82B96700 = {}  # data ptr in .rdata @0x8208D2F8, refs=1
+0x82B96760 = {}  # data ptr in .rdata @0x8208D318, refs=1
+0x82B96790 = {}  # data ptr in .rdata @0x8208D328, refs=1
+0x82B967B8 = {}  # data ptr in .rdata @0x8208D350, refs=1
+0x82B967C0 = {}  # data ptr in .rdata @0x8208D354, refs=1
+0x82B967C8 = {}  # data ptr in .rdata @0x8208D358, refs=1
+0x82B967D8 = {}  # data ptr in .rdata @0x8208D35C, refs=1
+0x82B967E8 = {}  # data ptr in .rdata @0x8208D360, refs=1
+0x82B967F8 = {}  # data ptr in .rdata @0x8208D364, refs=1
+0x82B96808 = {}  # data ptr in .rdata @0x8208D368, refs=1
+0x82B96818 = {}  # data ptr in .rdata @0x8208D36C, refs=1
+0x82B96828 = {}  # data ptr in .rdata @0x8208D370, refs=1
+0x82B96838 = {}  # data ptr in .rdata @0x8208D374, refs=1
+0x82B96848 = {}  # data ptr in .rdata @0x8208D378, refs=1
+0x82B96888 = {}  # data ptr in .rdata @0x8208D38C, refs=1
+0x82B96890 = {}  # data ptr in .rdata @0x8208D390, refs=1
+0x82B96898 = {}  # data ptr in .rdata @0x8208D394, refs=1
+0x82B968A0 = {}  # data ptr in .rdata @0x8208D398, refs=1
+0x82B968C8 = {}  # data ptr in .rdata @0x8208D3AC, refs=1
+0x82B96918 = {}  # data ptr in .rdata @0x8208D3BC, refs=1
+0x82B96930 = {}  # data ptr in .rdata @0x8208D3C0, refs=1
+0x82B96968 = {}  # data ptr in .rdata @0x8208D3C8, refs=1
+0x82B96998 = {}  # data ptr in .rdata @0x8208D3D0, refs=1
+0x82B969B0 = {}  # data ptr in .rdata @0x8208D3D4, refs=1
+0x82B969C8 = {}  # data ptr in .rdata @0x8208D3D8, refs=1
+0x82B96A00 = {}  # data ptr in .rdata @0x8208D3E0, refs=1
+0x82B96A18 = {}  # data ptr in .rdata @0x8208D3E4, refs=1
+0x82B96AC8 = {}  # data ptr in .rdata @0x8208D3F8, refs=1
+0x82B9C120 = {}  # data ptr in .rdata @0x8208DE10, refs=1
+0x82BC5098 = {}  # data ptr in .rdata @0x820901D4, refs=1
+0x82C19560 = {}  # data ptr in .rdata @0x8209BF44, refs=1
+0x82C19EF0 = {}  # data ptr in .rdata @0x8209C110, refs=1
+0x82C19EF8 = {}  # data ptr in .rdata @0x8209BF18, refs=1
+0x82C1A4B8 = {}  # data ptr in .rdata @0x8209C124, refs=1
+0x82C386A8 = {}  # data ptr in .rdata @0x8209C750, refs=1
+0x82C386B0 = {}  # data ptr in .rdata @0x8209C75C, refs=1
+0x82C386B8 = {}  # data ptr in .rdata @0x8209C8D0, refs=1
+0x82C3C6E8 = {}  # data ptr in .rdata @0x8209CCF4, refs=9
+0x82C3C700 = {}  # data ptr in .rdata @0x8209CD00, refs=9
+0x82C3C718 = {}  # data ptr in .rdata @0x8209CCF8, refs=9
+0x82C3C730 = {}  # data ptr in .rdata @0x8209CCFC, refs=9
+0x82C3C748 = {}  # data ptr in .rdata @0x8209CC80, refs=9
+0x82C69328 = {}  # data ptr in .rdata @0x820A033C, refs=11
+0x82C69AB8 = {}  # data ptr in .rdata @0x820A0368, refs=11
+0x82C93BD0 = {}  # data ptr in .rdata @0x820A1ADC, refs=1
+0x82C9C3E0 = {}  # data ptr in .rdata @0x820A2C68, refs=1
+0x82C9C440 = {}  # data ptr in .rdata @0x820A2C70, refs=1
+0x82CA12C0 = {}  # data ptr in .rdata @0x820A3270, refs=1
+0x82CA3768 = {}  # data ptr in .rdata @0x820A3528, refs=1
+0x82CA3788 = {}  # data ptr in .rdata @0x820A352C, refs=1
+0x82CA38D0 = {}  # data ptr in .rdata @0x820A3544, refs=1
+0x82CA3900 = {}  # data ptr in .rdata @0x820A3548, refs=1
+0x82CA3930 = {}  # data ptr in .rdata @0x820A34A8, refs=1
+0x82CDA560 = {}  # data ptr in .rdata @0x820A3D60, refs=3
+0x82D136F8 = {}  # data ptr in .rdata @0x820A4A90, refs=1
+0x82D2CC60 = {}  # data ptr in .rdata @0x820A5274, refs=1
+0x82D4BC98 = {}  # data ptr in .rdata @0x820A5E10, refs=1
+0x82D4BCA0 = {}  # data ptr in .rdata @0x820A5E14, refs=1
+0x82D4BCA8 = {}  # data ptr in .rdata @0x820A5E34, refs=1
+0x82DC94E0 = {}  # data ptr in .rdata @0x822F8684, refs=1
+0x82DC94F0 = {}  # data ptr in .rdata @0x822F812C, refs=1
+0x82DC9768 = {}  # data ptr in .rdata @0x822FD47C, refs=1
+0x82DC97B0 = {}  # data ptr in .rdata @0x822FD264, refs=1
+0x82DC9800 = {}  # data ptr in .rdata @0x822FD258, refs=1
+0x82DC9840 = {}  # data ptr in .rdata @0x822FD230, refs=1
+0x82DC9878 = {}  # data ptr in .rdata @0x822FD030, refs=1
+0x82DE9AF8 = {}  # data ptr in .rdata @0x82209888, refs=8
+0x82DEA398 = {}  # data ptr in .rdata @0x822EB908, refs=1
+0x82DEA508 = {}  # data ptr in .rdata @0x822EB768, refs=1
+0x82DEA520 = {}  # data ptr in .rdata @0x822EB75C, refs=1
+0x82DEA538 = {}  # data ptr in .rdata @0x822EB72C, refs=1
+0x82DEA548 = {}  # data ptr in .rdata @0x8226C280, refs=3
+0x82DEA688 = {}  # data ptr in .rdata @0x822EAC44, refs=1
+0x82E1BEB8 = {}  # data ptr in .rdata @0x822D89C0, refs=1
+0x82E1C188 = {}  # data ptr in .rdata @0x82232BA0, refs=5
+0x82E1D020 = {}  # data ptr in .rdata @0x82209C34, refs=28
+0x82E1D6C0 = {}  # data ptr in .rdata @0x82207AE4, refs=1
+0x82E1D8B8 = {}  # data ptr in .rdata @0x82207840, refs=4
+0x82E1D8C8 = {}  # data ptr in .rdata @0x82207848, refs=4
+0x82E1DE48 = {}  # data ptr in .rdata @0x822DE8A8, refs=1
+0x82E1DE60 = {}  # data ptr in .rdata @0x822DE760, refs=1
+0x82E20098 = {}  # data ptr in .rdata @0x822DE298, refs=1
+0x82E7F318 = {}  # data ptr in .rdata @0x822964E8, refs=2
+0x82E7F6C8 = {}  # data ptr in .rdata @0x822C6240, refs=1
+0x82E7F708 = {}  # data ptr in .rdata @0x822C5834, refs=1
+0x82E7F718 = {}  # data ptr in .rdata @0x822C56B8, refs=1
+0x82E7F728 = {}  # data ptr in .rdata @0x822C56B4, refs=1
+0x82E7F738 = {}  # data ptr in .rdata @0x822C54E0, refs=1
+0x82E7F7E0 = {}  # data ptr in .rdata @0x822C5CA4, refs=1
+0x82E7F7F0 = {}  # data ptr in .rdata @0x822C5F94, refs=1
+0x82E7F800 = {}  # data ptr in .rdata @0x822C5B2C, refs=1
+0x82E7F810 = {}  # data ptr in .rdata @0x822CE630, refs=1
+0x82E7FFB0 = {}  # data ptr in .rdata @0x822CE978, refs=1
+0x82E80508 = {}  # data ptr in .rdata @0x822967C8, refs=3
+0x82E80680 = {}  # data ptr in .rdata @0x8226822C, refs=4
+0x82E80B78 = {}  # data ptr in .rdata @0x821CC8BC, refs=29
+0x82E80BD0 = {}  # data ptr in .rdata @0x821CC8DC, refs=30
+0x82E81440 = {}  # data ptr in .rdata @0x822BEAF0, refs=1
+0x82E831B8 = {}  # data ptr in .rdata @0x822C03B8, refs=1
+0x82EDDDE8 = {}  # data ptr in .rdata @0x822B3F74, refs=1
+0x82EDDE30 = {}  # data ptr in .rdata @0x822B3DD4, refs=1
+0x82EDEB20 = {}  # data ptr in .rdata @0x8220C878, refs=23
+0x82F02280 = {}  # data ptr in .rdata @0x822979F0, refs=5
+0x82F02950 = {}  # data ptr in .rdata @0x8229A5A4, refs=3
+0x82F02A90 = {}  # data ptr in .rdata @0x8220C9F8, refs=27
+0x82F034F0 = {}  # data ptr in .rdata @0x8229F19C, refs=3
+0x82F04240 = {}  # data ptr in .rdata @0x822AD130, refs=1
+0x82F045A8 = {}  # data ptr in .rdata @0x82298E18, refs=1
+0x82F6D368 = {}  # data ptr in .rdata @0x822775AC, refs=1
+0x82F6D478 = {}  # data ptr in .rdata @0x82281A18, refs=1
+0x82F6D6D8 = {}  # data ptr in .rdata @0x82282964, refs=1
+0x82F6DB20 = {}  # data ptr in .rdata @0x82272160, refs=1
+0x82FB4000 = {}  # data ptr in .rdata @0x8228C570, refs=1
+0x82FEBF48 = {}  # data ptr in .rdata @0x8222C194, refs=1
+0x82FEC260 = {}  # data ptr in .rdata @0x822292A0, refs=1
+0x82FECA78 = {}  # data ptr in .rdata @0x8221A94C, refs=3
+0x82FECC10 = {}  # data ptr in .rdata @0x82218DD0, refs=6
+0x82FECC90 = {}  # data ptr in .rdata @0x8220DA34, refs=1
+0x82FECFB0 = {}  # data ptr in .rdata @0x82218714, refs=1
+0x82FED080 = {}  # data ptr in .rdata @0x82215B48, refs=1
+0x830575C8 = {}  # data ptr in .rdata @0x82203478, refs=1
+0x83057610 = {}  # data ptr in .rdata @0x8220346C, refs=1
+0x8306E410 = {}  # data ptr in .rdata @0x821FA4A8, refs=1
+0x8306EDD0 = {}  # data ptr in .rdata @0x821EEBF0, refs=1
+0x830AAAF0 = {}  # data ptr in .rdata @0x821E7A2C, refs=1
+0x830D39D0 = {}  # data ptr in .rdata @0x821D70A8, refs=1
+0x830D40B0 = {}  # data ptr in .rdata @0x821CDB58, refs=29
+0x830D4648 = {}  # data ptr in .rdata @0x821D2418, refs=1
+0x830D46C0 = {}  # data ptr in .rdata @0x821CE248, refs=50
+0x830D53E0 = {}  # data ptr in .rdata @0x821D00E0, refs=1
+0x830D5748 = {}  # data ptr in .rdata @0x821D6B48, refs=1
+0x830D63E8 = {}  # data ptr in .rdata @0x821D1854, refs=1
+0x83127F60 = {}  # data ptr in .rdata @0x821B3CB0, refs=1
+0x831C3D58 = {}  # data ptr in .rdata @0x821A29A4, refs=1
+0x83212B20 = {}  # data ptr in .rdata @0x8219EA90, refs=1
+0x83249030 = {}  # data ptr in .rdata @0x82199214, refs=1
+0x83249040 = {}  # data ptr in .rdata @0x821989C4, refs=2
+0x8329C860 = {}  # data ptr in .rdata @0x82195A44, refs=1
+0x832AA498 = {}  # data ptr in .rdata @0x82121214, refs=25
+0x832CEFC0 = {}  # data ptr in .rdata @0x8218235C, refs=1
+0x83349278 = {}  # data ptr in .rdata @0x8216E1F4, refs=1
+0x833AC560 = {}  # data ptr in .rdata @0x8213519C, refs=21
+0x833AC570 = {}  # data ptr in .rdata @0x8212133C, refs=11
+0x833ADC98 = {}  # data ptr in .rdata @0x8211E3CC, refs=1
+0x834051D0 = {}  # data ptr in .rdata @0x8210AAA0, refs=1
+0x83407640 = {}  # data ptr in .rdata @0x82115724, refs=1
+0x834076F0 = {}  # data ptr in .rdata @0x821123E8, refs=1
+0x83407BB8 = {}  # data ptr in .rdata @0x82113568, refs=1
+0x83407BD8 = {}  # data ptr in .rdata @0x821104A4, refs=1
+0x83408BF0 = {}  # data ptr in .rdata @0x821131A4, refs=1
+0x834091C0 = {}  # data ptr in .rdata @0x8210F468, refs=1
+0x83409208 = {}  # data ptr in .rdata @0x8210F1E8, refs=1
+0x834094F0 = {}  # data ptr in .rdata @0x821105E8, refs=1
+0x83456168 = {}  # data ptr in .rdata @0x820FA590, refs=1
+0x83456538 = {}  # data ptr in .rdata @0x820F8A8C, refs=3
+0x835717F8 = {}  # data ptr in .rdata @0x820C023C, refs=1
+0x83571BC8 = {}  # data ptr in .rdata @0x820C00BC, refs=1
+0x8357F918 = {}  # data ptr in .rdata @0x820B86DC, refs=2805
+0x83580A68 = {}  # data ptr in .data @0x837DC484, refs=1
+0x83580A80 = {}  # data ptr in .data @0x837DC480, refs=1
+0x83580AB0 = {}  # data ptr in .data @0x837DC474, refs=1
+0x835C6810 = {}  # data ptr in .rdata @0x82189AD8, refs=1
+0x835C6CF0 = {}  # data ptr in .rdata @0x82301F94, refs=2
+
+# Batch 2: function addresses built by code (lis+addi), not stored in data
+# (tools/find_missing_functions.py pass 1b, "strong").
+0x82448D78 = {}  # built by code @0x82447270, refs=2
+0x824867C8 = {}  # built by code @0x8323D0D0, refs=5
+0x826F62A8 = {}  # built by code @0x826FF4FC, refs=2
+0x826F62B8 = {}  # built by code @0x826FF624, refs=1
+0x826F62C8 = {}  # built by code @0x826FFE1C, refs=1
+0x826F62D8 = {}  # built by code @0x826FF924, refs=1
+0x826F62E8 = {}  # built by code @0x826FF704, refs=1
+0x826F62F8 = {}  # built by code @0x826FF45C, refs=1
+0x826F6308 = {}  # built by code @0x826FF974, refs=1
+0x826F6318 = {}  # built by code @0x826FF754, refs=1
+0x826F6328 = {}  # built by code @0x826FF4AC, refs=1
+0x826F6338 = {}  # built by code @0x826FF9C4, refs=1
+0x82A659B8 = {}  # built by code @0x82A515A0, refs=2
+0x82A9B388 = {}  # built by code @0x82AB4790, refs=1
+0x82B96460 = {}  # built by code @0x82B99E5C, refs=1
+0x82B96490 = {}  # built by code @0x82B99E58, refs=2
+0x82C3BF30 = {}  # built by code @0x82C3ECF8, refs=1
+0x82E1CDC8 = {}  # built by code @0x82E7DBB4, refs=1
+0x83568600 = {}  # built by code @0x83568E8C, refs=1

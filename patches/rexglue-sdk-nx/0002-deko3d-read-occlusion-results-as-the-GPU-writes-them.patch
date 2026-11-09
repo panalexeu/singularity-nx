@@ -1,0 +1,106 @@
+From 5cee7093fd1ed6d80cba6be0b49b8f74ea2df660 Mon Sep 17 00:00:00 2001
+From: Oleksii Horchynskyi <pan.alexeu@gmail.com>
+Date: Mon, 9 Nov 2026 13:25:19 +0200
+Subject: [PATCH 2/2] deko3d: read occlusion results as the GPU writes them
+ (nfsmw_dk_oclusion_directa); partial submit for a waiting game
+
+The game's render thread spun ~15% of its time waiting for occlusion results that the GPU had already written but that
+were only read once the frame's whole work finished. A query's two reports are zeroed when it starts and read as soon
+as both timestamps are set; a game waiting for one gets a partial submit instead of the frame's work being closed.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CGstJFihyJYNUGR3QC7gUu
+---
+ include/rex/x360/deko/render.h |  2 ++
+ src/x360/deko/destinos.cpp     | 34 +++++++++++++++++++++++++++++++++-
+ 2 files changed, 35 insertions(+), 1 deletion(-)
+
+diff --git a/include/rex/x360/deko/render.h b/include/rex/x360/deko/render.h
+index f43d64a..1b8ddbb 100644
+--- a/include/rex/x360/deko/render.h
++++ b/include/rex/x360/deko/render.h
+@@ -541,6 +541,8 @@ class RenderDk final : public DestinosNativos {
+   uint8_t* oclusion_cpu_ = nullptr;
+   DkGpuAddr oclusion_gpu_ = 0;
+   uint32_t oclusion_siguiente_ = 0;
++  uint64_t oclusion_directas_ = 0;      // results read before their work finished (nfsmw_dk_oclusion_directa)
++  uint64_t oclusion_envio_parcial_ = ~0ull;  // dibujados_ at the last partial submit for a waiting game
+   std::unordered_map<uint32_t, ConsultaDk> oclusion_abiertas_;     // by base: started, not ended
+   std::deque<ConsultaDk> oclusion_pendientes_;                     // ended, the GPU has not finished them
+   std::unordered_map<uint64_t, uint64_t> oclusion_listas_;         // by ticket: counted, not asked for yet
+diff --git a/src/x360/deko/destinos.cpp b/src/x360/deko/destinos.cpp
+index 68358a2..eb7741c 100644
+--- a/src/x360/deko/destinos.cpp
++++ b/src/x360/deko/destinos.cpp
+@@ -55,6 +55,11 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_saltar_borrados_repetidos, true, "NFSMW",
+                     "Renderizador nativo (20/09 noche): saltarse un borrado cuando el destino ya esta borrado "
+                     "con ese mismo valor y no se ha dibujado nada desde entonces. No cambia ni un pixel; "
+                     "'borrados saltados' en el informe C2 dice cuantos se ahorran");
++REXCVAR_DEFINE_BOOL(nfsmw_dk_oclusion_directa, true, "Deko3d",
++                    "Occlusion results are read as soon as the GPU wrote them (the report's timestamp, zeroed when the "
++                    "query starts, is no longer 0), not when the whole frame's work has finished; and a game waiting "
++                    "for one gets a partial submit instead of the frame's work being closed. The game's render thread "
++                    "spun ~15% of its time on these results");
+ REXCVAR_DEFINE_BOOL(nfsmw_nativo_resolver_sin_copia, true, "NFSMW",
+                     "Renderizador nativo (17/09, build 154; por defecto desde la 161, medido en consola: -2,36 ms "
+                     "de los 7,41 de copias): al resolver un destino entero a una textura del mismo "
+@@ -2394,6 +2399,8 @@ void RenderDk::InformePeriodico() {
+     for (size_t i = 0; i < lista.size() && i < 8; ++i) texto += fmt::format(" causa {}: {}", lista[i].second, lista[i].first);
+     if (!texto.empty()) X360_INFORME("[deko3d] rechazos por causa (total):{}", texto);
+   }
++  X360_INFORME("[deko3d] oclusion: {} resultados leidos antes de terminar su trabajo (en total, "
++               "nfsmw_dk_oclusion_directa)", oclusion_directas_);
+   X360_INFORME(
+       "[deko3d] ultimos {:.0f} s: {:.1f} fotogramas/s, {:.0f} dibujos por fotograma ({} rechazados en total); GPU "
+       "{:.2f} ms por fotograma ({} trabajos medidos); por fotograma: {:.1f} copias, {:.1f} borrados, {:.1f} barreras de transferencia, {:.2f} MB de subida (vertices, "
+@@ -2647,6 +2654,10 @@ void RenderDk::EmpezarOclusion(uint32_t base) {
+   c.par = oclusion_siguiente_;
+   c.dibujados = dibujados_;
+   oclusion_siguiente_ = (oclusion_siguiente_ + 1) % kParesOclusion;
++  // nfsmw_dk_oclusion_directa: both reports' timestamps at 0, so a written report can be told from an old one. The
++  // slot is free (its last pair was read), and the zeros reach memory before this work is submitted.
++  std::memset(oclusion_cpu_ + size_t(c.par) * 32, 0, 32);
++  dkMemBlockFlushCpuCache(oclusion_bloque_, c.par * 32, 32);
+   dkCmdBufReportCounter(nucleo_.comandos(), DkCounter_SamplesPassed, oclusion_gpu_ + uint64_t(c.par) * 32);
+   oclusion_abiertas_[base] = c;
+ }
+@@ -2686,6 +2697,16 @@ bool RenderDk::ResultadoOclusion(uint64_t ticket, uint64_t& muestras) {
+ 
+ void RenderDk::EnviarOclusiones() {
+   if (nucleo_.TrabajoAbierto() && !oclusion_pendientes_.empty() && oclusion_pendientes_.back().trabajo == trabajo_) {
++    if (REXCVAR_GET(nfsmw_dk_oclusion_directa)) {
++      // What is recorded goes to the GPU; the reports are read as it writes them (LeerOclusionesTerminadas).
++      if (oclusion_envio_parcial_ != dibujados_) {
++        oclusion_envio_parcial_ = dibujados_;
++        nucleo_.EnviarParcial();
++        OlvidarEstado();
++        g_.pase_valido = false;
++      }
++      return;
++    }
+     CerrarTrabajo();  // the next draw opens another
+   }
+ }
+@@ -2694,7 +2715,18 @@ void RenderDk::LeerOclusionesTerminadas() {
+   while (!oclusion_pendientes_.empty()) {
+     const ConsultaDk& c = oclusion_pendientes_.front();
+     if ((nucleo_.TrabajoAbierto() && c.trabajo == trabajo_) || !nucleo_.TrabajoTerminado(c.trabajo)) {
+-      break;
++      // Not finished as a whole: its two reports may be written already (a partial submit got that far).
++      if (!REXCVAR_GET(nfsmw_dk_oclusion_directa)) {
++        break;
++      }
++      dkMemBlockFlushCpuCache(oclusion_bloque_, c.par * 32, 32);
++      uint64_t sello_inicio = 0, sello_fin = 0;
++      std::memcpy(&sello_inicio, oclusion_cpu_ + size_t(c.par) * 32 + 8, 8);
++      std::memcpy(&sello_fin, oclusion_cpu_ + size_t(c.par) * 32 + 24, 8);
++      if (!sello_inicio || !sello_fin) {
++        break;  // in order: the later ones are not written either
++      }
++      ++oclusion_directas_;
+     }
+     dkMemBlockFlushCpuCache(oclusion_bloque_, c.par * 32, 32);
+     uint64_t inicio = 0, fin = 0;
+-- 
+2.43.0
+

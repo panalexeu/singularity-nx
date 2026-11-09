@@ -1,0 +1,16 @@
+# Recompiled guest code: derived from the game executable, regenerate with `rexglue codegen`.
+# Never commit or redistribute it.
+generated/default/
+# Build output
+out/
+build/
+# Logs
+*.log
+CMakeUserPresets.json
+# Personal learning notes
+LOG.md
+# Image dumps (game data)
+*.bin
+# Game files (user-supplied, never commit)
+singularity-extract
+__pycache__/

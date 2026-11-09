@@ -1,0 +1,7 @@
+[submodule "thirdparty/rexglue-sdk-nx"]
+	path = thirdparty/rexglue-sdk-nx
+	url = https://github.com/nx-mod/rexglue-sdk-nx.git
+	branch = switch
+[submodule "thirdparty/rexglue-sdk"]
+	path = thirdparty/rexglue-sdk
+	url = https://github.com/rexglue/rexglue-sdk.git

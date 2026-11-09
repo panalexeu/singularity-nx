@@ -1,0 +1,22 @@
+# singularity.toml - next to singularity.nro on the SD card (sdmc:/switch/singularity/).
+
+# Handheld GPU clock requested from the system (0 = leave it, 384, 460): official Horizon modes, not an overclock.
+singularity_switch_gpu_mhz = 460
+
+# Handheld CPU clock kept by the NRO (0 = leave it at 1020, 1224, 1581, 1785). 1785 MHz is the console's own boost
+# clock, set through clkrst as sys-clk does. Uses more battery.
+singularity_switch_cpu_mhz = 1785
+
+# Game patch 1: no predicated tiling (the bottom of the screen was red without it).
+singularity_patch_no_tiling = true
+
+# Scene resolution at startup: 720 (the game's 1280x720) or 540 (960x540, scaled to the screen). Game patch 3, as
+# gears2-nx 1.1.0's 540p mode, plus a 960x540 video mode for the UI and back buffer.
+singularity_resolution = 540
+
+# Skip the depth prepass (gears2-nx's rule): drawn, the base pass's depth misses it by a rounding difference between
+# two separately compiled vertex shaders, and the world turns red.
+singularity_sin_prepaso_z = true
+
+# Also skip the masked (alpha-tested) depth prepass: drawn, windows, rubbish and debris showed old frames.
+singularity_sin_prepaso_enmascarado = true
