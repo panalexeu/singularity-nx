@@ -13,11 +13,16 @@
 #include <rex/rex_app.h>
 #include <rex/runtime.h>
 #include <rex/system.h>
+#include <rex/system/xmemory.h>
+#include <rex/system/kernel_state.h>
 #include <rex/ui/flags.h>
 #include <rex/x360/xenos.h>
 
 #include <algorithm>
 #include <cstdlib>
+#include <vector>
+#include <iterator>
+#include <fstream>
 #include <cstring>
 #include <filesystem>
 #include <memory>
@@ -111,6 +116,7 @@ class SingularityApp : public rex::ReXApp {
     }
     REXLOG_INFO("singularity: scene {}p", REXCVAR_GET(singularity_resolution));
     singularity::cpu::Configurar();
+    RehashConfigFiles();
   }
 
   void OnPostSetup() override {
@@ -159,6 +165,40 @@ class SingularityApp : public rex::ReXApp {
       }
       svcSleepThread(1'000'000'000LL);
     }
+  }
+
+  // The game checks its config files (RvGame/CookedXenon/Coalesced_<LANG>.bin) against SHA-1 hashes in its own
+  // image: a table of "coalesced_int.bin\0" + 20 bytes near its end (0x83A02E80 for coalesced_int.bin). An edited
+  // file gave "Disc Read Error". Each entry's hash is replaced by the hash of the file on the SD card before the game
+  // starts, so the config can be edited (e.g. [SystemSettings] ScreenPercentage).
+  void RehashConfigFiles() {
+#if defined(__SWITCH__)
+    auto* memory = rex::system::kernel_memory();
+    if (!memory) return;
+    constexpr uint32_t kBegin = 0x839F0000u, kEnd = 0x83A10000u;
+    uint8_t* image = memory->TranslateVirtual<uint8_t*>(kBegin);
+    const size_t size = kEnd - kBegin;
+    static constexpr char kPrefix[] = "coalesced_";
+    for (size_t i = 0; i + sizeof(kPrefix) < size; ++i) {
+      if (std::memcmp(image + i, kPrefix, sizeof(kPrefix) - 1) != 0) continue;
+      const char* name = reinterpret_cast<const char*>(image + i);
+      const size_t len = strnlen(name, std::min<size_t>(64, size - i));
+      if (len < 14 || len >= 64 || std::strcmp(name + len - 4, ".bin") != 0 || i + len + 1 + 20 > size) continue;
+      uint8_t* stored = image + i + len + 1;
+      const auto path = game_data_root() / "RvGame" / "CookedXenon" / std::string(name, len);
+      std::ifstream file(path, std::ios::binary);
+      if (!file) continue;
+      std::vector<uint8_t> data((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+      uint8_t hash[SHA1_HASH_SIZE];
+      sha1CalculateHash(hash, data.data(), data.size());
+      if (std::memcmp(hash, stored, SHA1_HASH_SIZE) != 0) {
+        std::memcpy(stored, hash, SHA1_HASH_SIZE);
+        REXLOG_INFO("singularity: {} edited ({} bytes): its hash in the image (at {:08X}) updated", name, data.size(),
+                    uint32_t(kBegin + i + len + 1));
+      }
+      i += len;
+    }
+#endif
   }
 
   [[noreturn]] static void Fail(const std::string& msg) {
