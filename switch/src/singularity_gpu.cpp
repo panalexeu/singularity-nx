@@ -1442,6 +1442,8 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     const rex::x360::EntradaShader* entry = singularity::shaders::Global().Identificar(type == 0, physical, microcode_);
     if (type == 1) {
       ps_ = entry;
+      // Direct3D's own pixel shaders (clears) are in no package: kept for the frame trace (rare, so the copy is cheap).
+      if (!entry) unknown_ps_microcode_ = microcode_;
       return;
     }
     // The same vertex shader loaded again from the same address (D3D reloads it for every draw that sets it): its
@@ -1501,10 +1503,24 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     const uint32_t clear_format = (Register(g::XE_GPU_REG_RB_COLOR_INFO) >> 16) & 0xF;  // (its color: EmulateClear)
     bool rect_clear = !msaa && (initiator & 0x3F) == 8 && (initiator >> 16) == 3 &&
                       Register(g::XE_GPU_REG_RB_COLOR_MASK) == 0xFFFF && (clear_format <= 1 || clear_format == 4);
+    const bool rect_shape = rect_clear;
     for (uint32_t j = 0; j < 4 && rect_clear; ++j) {
       float v;
       std::memcpy(&v, &registers_[0x4400 + j], 4);
       rect_clear = clear_format == 4 ? (std::isfinite(v) && v >= -32.0f && v <= 32.0f) : (v >= 0.0f && v <= 1.0f);
+    }
+    // singularity-recomp: the same rectangle whose PS c0 is not a color (Bink's YUV constants left there: 1.164 1.596
+    // 0 -0.871). Direct3D's clear shader writes the rectangle's vertex COLOR; when that is a color in 0..1 on an 8-bit
+    // target, it is the clear. UE3 clears its light attenuation buffer that way before a light function multiplies
+    // into it; skipped, Singularity's projector slides multiplied into stale data with only red in it.
+    bool clear_vertex_color = false;
+    if (rect_shape && !rect_clear && clear_format <= 1) {
+      float c[4];
+      if (ClearRectVertexColor(registers_.data(), c)) {
+        clear_vertex_color = true;
+        for (float v : c) clear_vertex_color = clear_vertex_color && v >= 0.0f && v <= 1.0f;
+      }
+      rect_clear = clear_vertex_color;
     }
     // Gears of War 2 fills each shadow map with the far plane before drawing it: one rectangle, depth-only, depth
     // written with ALWAYS (depthcontrol 00000076), through a vertex shader of its own that is not in the library.
@@ -1517,8 +1533,11 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     if (!vs_ &&
         ((msaa && (Register(g::XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR) & 0x3FFF) >= 0x2000) || rect_clear ||
          depth_fill)) {
-      if (draw_tracing_) DrawTraceLine(true, "Direct3D clear, emulated");
-      EmulateClear(msaa);
+      if (draw_tracing_) {
+        DrawTraceLine(true, clear_vertex_color ? "Direct3D clear, emulated (vertex color)" : "Direct3D clear, emulated");
+        if (clear_vertex_color) TraceClearShaders();
+      }
+      EmulateClear(msaa, clear_vertex_color);
       return;
     }
     if (!vs_) {
@@ -1905,7 +1924,54 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
   // (to 0); c1-c3 on another base than c0 clear the depth buffer at their base (far plane, stencil 0); the bound
   // depth target is cleared only when depth or stencil is written and it is not on c0's base; depth-only mode
   // clears no color. The first few are logged with what the game had set, to check.
-  void EmulateClear(uint32_t msaa) {
+  // Direct3D's clear rectangle's COLOR (7 dwords per vertex in fetch constant 0: POSITION float3, COLOR float4), the
+  // first vertex's. False when fetch constant 0 is not such a buffer or a component is not finite.
+  bool ClearRectVertexColor(const uint32_t* r, float color[4]) const {
+    namespace g = rex::graphics;
+    const uint32_t f0 = r[g::XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0], f1 = r[g::XE_GPU_REG_SHADER_CONSTANT_FETCH_00_1];
+    if ((f0 & 0x3) != uint32_t(xenos::FetchConstantType::kVertex) || ((f1 >> 2) & 0xFFFFFF) < 7) return false;
+    const auto endian = static_cast<xenos::Endian>(f1 & 0x3);
+    const uint8_t* v = memory_->TranslatePhysical(f0 & ~uint32_t(0x3));
+    if (!v) return false;
+    for (uint32_t j = 0; j < 4; ++j) {
+      std::memcpy(&color[j], v + (3 + j) * 4, 4);
+      color[j] = xenos::GpuSwap(color[j], endian);
+      if (!std::isfinite(color[j])) return false;
+    }
+    return true;
+  }
+
+  // Frame trace only: what Direct3D's clear rectangle really carries (its vertices as stored, both internal shaders'
+  // microcode and their first constants), to read which value the clear writes.
+  void TraceClearShaders() {
+    namespace g = rex::graphics;
+    auto hex = [](const std::vector<uint32_t>& w) {
+      std::string s;
+      for (uint32_t x : w) s += fmt::format(" {:08X}", x);
+      return s;
+    };
+    const uint32_t f0 = Register(g::XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0);
+    const uint32_t f1 = Register(g::XE_GPU_REG_SHADER_CONSTANT_FETCH_00_1);
+    std::vector<uint32_t> vertices;
+    if (const uint8_t* v = memory_->TranslatePhysical(f0 & ~uint32_t(0x3))) {
+      for (uint32_t i = 0; i < std::min<uint32_t>((f1 >> 2) & 0xFFFFFF, 24); ++i) {
+        uint32_t w;
+        std::memcpy(&w, v + i * 4, 4);
+        vertices.push_back(w);  // as in memory (big-endian bytes)
+      }
+    }
+    std::string c;
+    for (uint32_t i = 0; i < 16; ++i) {
+      c += fmt::format(" {:08X}", registers_[(i < 8 ? 0x4400 : 0x4000 - 8) + i]);
+    }
+    REXLOG_INFO("[draws]       clear fetch0 {:08X} {:08X}, vertices (memory order):{}", f0, f1, hex(vertices));
+    REXLOG_INFO("[draws]       clear VS {} words:{}", vs_microcode_.size(), hex(vs_microcode_));
+    REXLOG_INFO("[draws]       clear PS {} words:{}", unknown_ps_microcode_.size(), hex(unknown_ps_microcode_));
+    REXLOG_INFO("[draws]       clear PS c0-c1, VS c0-c1 (bits):{}; RB_COLOR_CLEAR {:08X}", c,
+                Register(g::XE_GPU_REG_RB_COLOR_CLEAR));
+  }
+
+  void EmulateClear(uint32_t msaa, bool vertex_color = false) {
     namespace g = rex::graphics;
     AliasScope alias(*this);
     const uint32_t* r = msaa ? alias.Apply(msaa) : registers_.data();
@@ -1936,6 +2002,14 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       if (vte & (1u << 5)) z += zo;
       game_z = z;
       game_vertices = std::isfinite(z);
+      if (draw_tracing_) {  // frame trace only: what the color-through-depth bits are made from
+        uint32_t raw[7];
+        std::memcpy(raw, v, sizeof(raw));
+        REXLOG_INFO("[draws]       clear z: fetch0 {:08X} {:08X} vertex0 (memory order) {:08X} {:08X} {:08X} {:08X} "
+                    "{:08X} {:08X} {:08X}; zscale {} zoffset {} vte {:08X} -> z {}; depth_info {:08X} stencilref {:08X}",
+                    base.fetch_vertices[0], base.fetch_vertices[1], raw[0], raw[1], raw[2], raw[3], raw[4], raw[5],
+                    raw[6], zs, zo, vte, z, r[g::XE_GPU_REG_RB_DEPTH_INFO], r[g::XE_GPU_REG_RB_STENCILREFMASK]);
+      }
     }
     // The whole surface: the renderer takes a copy's rectangle from three vertices in fetch constant 0 (where
     // Direct3D puts a resolve's), clipped by the window scissor. Ours, in a small guest buffer made once.
@@ -1999,6 +2073,8 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       for (uint32_t j = 0; j < 4; ++j) {
         float v;
         std::memcpy(&v, &registers_[0x4400 + j], 4);
+        // The rectangle's vertex color when PS c0 is not the color (Draw: clear_vertex_color).
+        if (vertex_color) v = game_vertices ? game_color[j] : 0.0f;
         color |= uint32_t(std::lround(std::clamp(v, 0.0f, 1.0f) * 255.0f)) << (j * 8);
       }
     }
@@ -2050,7 +2126,11 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
         if (game_vertices) {
           const bool d24fs = (depth_info >> 16) & 0x1;
           const float z = std::clamp(game_z, 0.0f, d24fs ? 1.99999988f : 1.0f);
-          const uint32_t d24 = d24fs ? xenos::Float32To20e4(z, true) : uint32_t(z * 16777215.0f + 0.5f);
+          // In double: in float, 1.0 * 16777215 + 0.5 rounds to 16777216 (0x1000000), which the << 8 below shifted out
+          // to 0. Singularity's white light attenuation clear (depth 1, stencil FF) became 000000FF, red, and the
+          // projector slides multiplied into it came out red.
+          const uint32_t d24 = d24fs ? xenos::Float32To20e4(z, true)
+                                     : std::min<uint32_t>(uint32_t(double(z) * 16777215.0 + 0.5), 0xFFFFFFu);
           bits = (d24 << 8) | (stencil & 0xFF);
         }
         rex::x360::RegistrosCopia c = base;
@@ -2060,6 +2140,10 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
         c.rb_color_clear_lo = bits;
         destinos_->Copiar(c);
         what += fmt::format(" c0={:03X}={:08X} (by the depth over it)", c0_base, bits);
+        if (draw_tracing_) {
+          REXLOG_INFO("[draws]       clear by depth: d24fs {} game z {} stencil {:02X} -> bits {:08X}",
+                      (depth_info >> 16) & 0x1, game_z, stencil, bits);
+        }
       }
     }
     ++clears_;
@@ -2639,6 +2723,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
   uint64_t geometria_ = 0, enviados_ = 0, sin_vs_ = 0, sin_ps_ = 0;
   std::unordered_map<uint64_t, uint64_t> unknown_vs_skips_;          // microcode hash -> draws skipped
   std::unordered_map<uint64_t, std::string> unknown_vs_sample_;      // one draw's state each
+  std::vector<uint32_t> unknown_ps_microcode_;                        // the last PS not in the library (TraceClearShaders)
   std::array<uint64_t, 16> color_formats_{};
   std::array<uint64_t, 2> depth_formats_{};
   std::array<uint64_t, 32> primitive_types_{};
