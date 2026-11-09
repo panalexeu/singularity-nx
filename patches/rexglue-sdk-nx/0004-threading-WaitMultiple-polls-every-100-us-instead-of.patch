@@ -1,0 +1,39 @@
+From 53cacb31866d89fd3380113ce6469bcca57c3f07 Mon Sep 17 00:00:00 2001
+From: Oleksii Horchynskyi <pan.alexeu@gmail.com>
+Date: Mon, 9 Nov 2026 17:00:07 +0200
+Subject: [PATCH] threading: WaitMultiple polls every 100 us instead of 1 ms
+ (the game's audio thread woke late for every block)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CGstJFihyJYNUGR3QC7gUu
+---
+ src/core/threading_posix.cpp | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/src/core/threading_posix.cpp b/src/core/threading_posix.cpp
+index e619594..cc2a58d 100644
+--- a/src/core/threading_posix.cpp
++++ b/src/core/threading_posix.cpp
+@@ -499,15 +499,17 @@ class PosixConditionBase {
+         return std::make_pair<WaitResult, size_t>(WaitResult::kTimeout, 0);
+       }
+ 
++      // Polls every 100 us (was 1 ms): the game's audio thread waits here for each 5.33 ms block of the audio driver
++      // and woke up to 1 ms late every time, which made it miss blocks (the sound crackled).
+       if (timeout == std::chrono::milliseconds::max()) {
+-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
++        std::this_thread::sleep_for(std::chrono::microseconds(100));
+       } else {
+         // In microseconds. In milliseconds, the remainder of a short wait was
+         // truncated to 0 and sleep_for(0) does not sleep: the alertable wait asks
+         // for 1 ms slices, so WaitAny spun for its whole timeout. On Switch the
+         // audio thread (0x2B) ate a whole core this way.
+         auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(end_time - now);
+-        auto sleep_time = std::min(remaining, std::chrono::microseconds(1000));
++        auto sleep_time = std::min(remaining, std::chrono::microseconds(100));
+         std::this_thread::sleep_for(sleep_time);
+       }
+     }
+-- 
+2.43.0
+
