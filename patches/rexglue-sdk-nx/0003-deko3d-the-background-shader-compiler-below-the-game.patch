@@ -1,4 +1,4 @@
-From e86fe44e11b4c64c3de439a99da1f90ea9b611db Mon Sep 17 00:00:00 2001
+From c81d22ef45aa8a998275bfd630905d9ec4e2a3c3 Mon Sep 17 00:00:00 2001
 From: Oleksii Horchynskyi <pan.alexeu@gmail.com>
 Date: Mon, 9 Nov 2026 15:47:00 +0200
 Subject: [PATCH] deko3d: the background shader compiler below the game's
@@ -7,11 +7,11 @@ Subject: [PATCH] deko3d: the background shader compiler below the game's
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01CGstJFihyJYNUGR3QC7gUu
 ---
- src/ui/deko3d/compilador.cpp | 8 ++++++--
- 1 file changed, 6 insertions(+), 2 deletions(-)
+ src/ui/deko3d/compilador.cpp | 24 ++++++++++++++++++++----
+ 1 file changed, 20 insertions(+), 4 deletions(-)
 
 diff --git a/src/ui/deko3d/compilador.cpp b/src/ui/deko3d/compilador.cpp
-index 9e913c3..6c833c2 100644
+index 9e913c3..1b791bc 100644
 --- a/src/ui/deko3d/compilador.cpp
 +++ b/src/ui/deko3d/compilador.cpp
 @@ -16,7 +16,11 @@ namespace rex::deko3d {
@@ -27,15 +27,31 @@ index 9e913c3..6c833c2 100644
  
  // A shader that uses what the game's do (a UBO, a texture, a dynamic loop), to know at start that uam works here.
  constexpr char kAutoprueba[] = R"(#version 460
-@@ -80,7 +84,7 @@ struct Compilador::Datos {
+@@ -79,9 +83,21 @@ struct Compilador::Datos {
+ };
  
  Compilador::Compilador() : datos_(std::make_unique<Datos>()) {
-   if (R_FAILED(threadCreate(&datos_->hilo, Datos::Bucle, datos_.get(), nullptr, kPila, kPrioridad, -2)) ||
+-  if (R_FAILED(threadCreate(&datos_->hilo, Datos::Bucle, datos_.get(), nullptr, kPila, kPrioridad, -2)) ||
 -      R_FAILED(threadStart(&datos_->hilo))) {
-+      R_FAILED(svcSetThreadCoreMask(datos_->hilo.handle, -1, kNucleos)) || R_FAILED(threadStart(&datos_->hilo))) {
-     Fatal("[dk] no se pudo crear el hilo de compilacion de shaders (pila de 8 MiB, prioridad 0x%X)", kPrioridad);
+-    Fatal("[dk] no se pudo crear el hilo de compilacion de shaders (pila de 8 MiB, prioridad 0x%X)", kPrioridad);
++  // Below the game if the system allows it, else at the game's priority (the old behaviour); any core if allowed.
++  int prioridad = kPrioridad;
++  Result rc = threadCreate(&datos_->hilo, Datos::Bucle, datos_.get(), nullptr, kPila, prioridad, -2);
++  if (R_FAILED(rc)) {
++    prioridad = 0x3B;
++    rc = threadCreate(&datos_->hilo, Datos::Bucle, datos_.get(), nullptr, kPila, prioridad, -2);
++  }
++  if (R_FAILED(rc)) {
++    Fatal("[dk] no se pudo crear el hilo de compilacion de shaders (pila de 8 MiB, prioridad 0x%X): 0x%X", prioridad, rc);
++  }
++  const Result rc_nucleos = svcSetThreadCoreMask(datos_->hilo.handle, -3, kNucleos);
++  Registro("[dk] hilo de compilacion de shaders: prioridad 0x%X, nucleos 0x%X (%s)", prioridad, kNucleos,
++           R_SUCCEEDED(rc_nucleos) ? "aplicados" : "no permitidos, el nucleo por defecto");
++  if (R_FAILED(threadStart(&datos_->hilo))) {
++    Fatal("[dk] no se pudo arrancar el hilo de compilacion de shaders");
    }
  }
+ 
 -- 
 2.43.0
 
