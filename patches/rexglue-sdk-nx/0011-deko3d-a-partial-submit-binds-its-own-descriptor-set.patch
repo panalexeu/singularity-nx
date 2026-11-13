@@ -1,0 +1,37 @@
+From 06b7c18361a54cf4a8f6fbc3884c1e9a69a8cf61 Mon Sep 17 00:00:00 2001
+From: Oleksii Horchynskyi <pan.alexeu@gmail.com>
+Date: Fri, 13 Nov 2026 17:22:20 +0200
+Subject: [PATCH] deko3d: a partial submit binds its own descriptor sets again
+
+The descriptor sets are queue state, not command list state. The renderer bound its sets once per work and then
+submitted the frame in pieces (every N draws, after occlusion queries); while an achievement popup was up the
+presenter painted from the interface thread between two pieces and left its own small sets bound. The rest of the
+frame looked its textures up in the presenter's table: the screen flashed black for the popup's ~4.5 s, and an
+index past the end of that table faulted the GPU ("la cola de deko3d esta en error").
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CGstJFihyJYNUGR3QC7gUu
+---
+ src/ui/deko3d/nucleo.cpp | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/src/ui/deko3d/nucleo.cpp b/src/ui/deko3d/nucleo.cpp
+index 24ae14b..b3a26a1 100644
+--- a/src/ui/deko3d/nucleo.cpp
++++ b/src/ui/deko3d/nucleo.cpp
+@@ -406,6 +406,12 @@ void Nucleo::EnviarParcial() {
+   } else {
+     disp_->Enviar(dkCmdBufFinishList(comandos_), "un envio parcial");
+   }
++  // The descriptor sets are queue state, not command list state: whatever another Nucleo submitted on this queue
++  // between two pieces of this work (the presenter painting from the interface thread while an achievement popup is
++  // up) left its own sets bound. Without this, the rest of the frame looked its textures up in the presenter's small
++  // table: black or wrong textures (the screen flashed black under the popup) or, past its end, a GPU fault that
++  // put the queue in error.
++  BindDescriptores();
+ }
+ 
+ bool Nucleo::TrabajoTerminado(uint64_t trabajo) {
+-- 
+2.43.0
+
