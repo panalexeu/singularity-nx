@@ -1,0 +1,100 @@
+From d844e2d69dd8e5def480670da56dfd544ef42555 Mon Sep 17 00:00:00 2001
+From: Oleksii Horchynskyi <pan.alexeu@gmail.com>
+Date: Fri, 13 Nov 2026 11:58:27 +0200
+Subject: [PATCH] deko3d textures: 32768 image descriptors, and textures
+ released when the table passes three quarters
+
+The image descriptor table (one entry per texture view) had 8192 entries. Singularity keeps ~8,000 small textures
+alive, well under the texture cache's MB limit, so the table filled during play: from then on every new view got
+descriptor 0, the empty texture, and whatever loaded next (a character, a note, a whole level after a transition)
+was drawn black. The table now has 32768 entries (32 bytes each), and above three quarters of it the textures unused
+for 120 frames are released even under the MB limit. The periodic report gives the descriptors in use.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CGstJFihyJYNUGR3QC7gUu
+---
+ include/rex/x360/deko/render.h |  1 +
+ src/x360/deko/destinos.cpp     |  8 +++++++-
+ src/x360/deko/texturas.cpp     | 19 +++++++++++++++----
+ 3 files changed, 23 insertions(+), 5 deletions(-)
+
+diff --git a/include/rex/x360/deko/render.h b/include/rex/x360/deko/render.h
+index 1b8ddbb..a2b5fe8 100644
+--- a/include/rex/x360/deko/render.h
++++ b/include/rex/x360/deko/render.h
+@@ -591,6 +591,7 @@ class RenderDk final : public DestinosNativos {
+   std::vector<uint32_t> descriptores_libres_;
+   std::vector<std::vector<uint32_t>> descriptores_por_liberar_;  // per work slot
+   uint32_t siguiente_descriptor_ = 8;
++  uint64_t suelta_por_descriptores_ = 0;  // frame of the last release forced by the descriptor table
+   std::unordered_map<uint64_t, uint32_t> samplers_;  // key -> descriptor
+   uint32_t avisos_nivel_vacio_ = 0;
+   uint32_t siguiente_sampler_ = 1;
+diff --git a/src/x360/deko/destinos.cpp b/src/x360/deko/destinos.cpp
+index dd2209e..e2e1975 100644
+--- a/src/x360/deko/destinos.cpp
++++ b/src/x360/deko/destinos.cpp
+@@ -426,7 +426,10 @@ RenderDk::RenderDk(deko::ProveedorDeko3d& proveedor, rex::memory::Memory* memori
+   config.kb_previos = 512;
+   config.mb_codigo = 16;
+   config.mb_trozo_imagenes = 32;
+-  config.descriptores_imagen = 8192;
++  // One descriptor per texture view (texture x swizzle x view format). 8192 filled up in Singularity (~8,000 small
++  // textures alive, well under the cache's MB limit): from then on every new view got descriptor 0, the empty
++  // texture, and whatever was loaded next (a character, a note, a whole level) was drawn black. 32 bytes each.
++  config.descriptores_imagen = 32768;
+   config.descriptores_sampler = 1024;
+   nucleo_.Crear(proveedor_.dispositivo(), config);
+   nucleo_.al_atascarse = [this](uint64_t trabajo) { VolcarNovedades(trabajo); };
+@@ -2404,6 +2407,9 @@ void RenderDk::InformePeriodico() {
+   }
+   X360_INFORME("[deko3d] oclusion: {} resultados leidos antes de terminar su trabajo (en total, "
+                "nfsmw_dk_oclusion_directa)", oclusion_directas_);
++  X360_INFORME("[deko3d] descriptores de imagen: {} en uso de {} ({} vistas)",
++               siguiente_descriptor_ - uint32_t(descriptores_libres_.size()), nucleo_.config().descriptores_imagen,
++               vistas_.size());
+   X360_INFORME(
+       "[deko3d] ultimos {:.0f} s: {:.1f} fotogramas/s, {:.0f} dibujos por fotograma ({} rechazados en total); GPU "
+       "{:.2f} ms por fotograma ({} trabajos medidos); por fotograma: {:.1f} copias, {:.1f} borrados, {:.1f} barreras de transferencia, {:.2f} MB de subida (vertices, "
+diff --git a/src/x360/deko/texturas.cpp b/src/x360/deko/texturas.cpp
+index e681e38..91be6d8 100644
+--- a/src/x360/deko/texturas.cpp
++++ b/src/x360/deko/texturas.cpp
+@@ -1137,10 +1137,20 @@ uint32_t RenderDk::PrepararTextura(const uint32_t* f, uint16_t tipo_shader, uint
+ // addresses: without a limit the cache grew ~20 MB every 40 s of racing (docs/native-renderer.md).
+ void RenderDk::SoltarTexturasSiHaceFalta() {
+   const uint64_t limite = uint64_t(REXCVAR_GET(nfsmw_nativo_texturas_mb_max)) << 20;
+-  if (bytes_texturas_ <= limite) {
++  // The descriptor table is a limit of its own: many small textures fill it long before the MB limit (a full table
++  // gives every new view the empty texture). Above three quarters of it, every texture unused for
++  // kFotogramasSinUsoParaSoltar frames is released, at most once per that many frames (the freed descriptors come
++  // back as their slots' fences pass).
++  const uint32_t descriptores_usados = siguiente_descriptor_ - uint32_t(descriptores_libres_.size());
++  const bool por_descriptores = descriptores_usados > nucleo_.config().descriptores_imagen / 4 * 3 &&
++                                fotograma_ >= suelta_por_descriptores_ + kFotogramasSinUsoParaSoltar;
++  if (bytes_texturas_ <= limite && !por_descriptores) {
+     return;
+   }
+-  const uint64_t objetivo = limite / 4 * 3;
++  if (por_descriptores) {
++    suelta_por_descriptores_ = fotograma_;
++  }
++  const uint64_t objetivo = por_descriptores ? 0 : limite / 4 * 3;
+   uint64_t soltadas = 0, bytes = 0;
+   for (auto it = texturas_.begin(); it != texturas_.end() && bytes_texturas_ > objetivo;) {
+     TexturaDk& t = it->second;
+@@ -1156,8 +1166,9 @@ void RenderDk::SoltarTexturasSiHaceFalta() {
+   }
+   if (soltadas) {
+     ++generacion_texturas_;  // the per-fetch cache may name them
+-    REXLOG_INFO("[deko3d] texturas: {} soltadas ({} MB); quedan {} ({} MB)", soltadas, bytes >> 20, texturas_.size(),
+-                bytes_texturas_ >> 20);
++    REXLOG_INFO("[deko3d] texturas: {} soltadas ({} MB){}; quedan {} ({} MB), {} descriptores en uso de {}", soltadas,
++                bytes >> 20, por_descriptores ? " por la tabla de descriptores" : "", texturas_.size(),
++                bytes_texturas_ >> 20, descriptores_usados, nucleo_.config().descriptores_imagen);
+   }
+ }
+ 
+-- 
+2.43.0
+

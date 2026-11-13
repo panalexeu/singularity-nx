@@ -136,3 +136,62 @@ REX_HOOK_RAW(sub_828EDF78) {
   sf(p_low, low);
   sf(p_band, band);
 }
+
+// ---------------------------------------------------------------------------------------------------------------------
+// singularity_audio_fin_por_duracion: sounds that never report finished (the audio tapes' speech never started).
+//
+// FXAudio2SoundSource::IsFinished (sub_82DC70A0, source vtable 0x822FFE90 slot 28; source+8 = FWaveInstance, +16 =
+// paused) ends a sound when its XAudio2 voice has no buffer queued. On the Switch ~20 % of sounds keep 1 buffer queued
+// after their audio has played out, so they never finish; a sound cue that chains sounds (a concatenator) then stops at
+// the stuck one: the audio tape cue (tape noise start -> speech -> tape noise stop) never reached the speech. Safety net
+// until the decoder hands that last buffer back: a non-looping sound (wave instance+32, LoopingMode, 0) that has played
+// (paused time excluded) for longer than 1.5 x its wave's Duration (wave+108, USoundNodeWave::GetDuration, wave vtable
+// slot 288) + 0.5 s finishes as the original does on its own finished path: WaveInstance->NotifyFinished
+// (sub_833AC1D8), then "finished". Measured: 1,831 sounds ended this way in 27 min of play, the tapes speak.
+#include <mutex>
+#include <unordered_map>
+
+REXCVAR_DEFINE_BOOL(singularity_audio_fin_por_duracion, true, "Singularity",
+                    "Finish non-looping sounds that have played for 1.5 x their length + 0.5 s without finishing "
+                    "(audio tapes' speech)");
+
+REX_EXTERN(__imp__sub_82DC70A0);
+REX_HOOK_RAW(sub_82DC70A0) {
+  const uint32_t fuente = ctx.r3.u32;
+  __imp__sub_82DC70A0(ctx, base);
+  if (!REXCVAR_GET(singularity_audio_fin_por_duracion)) return;
+  struct Seguimiento {
+    uint32_t instancia = 0;
+    uint64_t ultima_ns = 0;   // last IsFinished call for this source
+    uint64_t sonando_ns = 0;  // time played: the gaps between calls while not paused, each capped at 100 ms
+  };
+  static std::mutex m;
+  static std::unordered_map<uint32_t, Seguimiento> fuentes;
+  const uint32_t instancia = ctx.r3.u32 ? 0 : REX_LOAD_U32(fuente + 8);
+  if (!instancia) {
+    std::lock_guard<std::mutex> l(m);
+    fuentes.erase(fuente);
+    return;
+  }
+  if (REX_LOAD_U32(instancia + 32) != 0) return;  // looping
+  const uint32_t onda = REX_LOAD_U32(instancia);
+  if (!onda) return;
+  const float duracion = std::bit_cast<float>(REX_LOAD_U32(onda + 108));
+  if (!(duracion > 0.0f && duracion < 1000.0f)) return;
+  const uint64_t ahora = AhoraNs();
+  {
+    std::lock_guard<std::mutex> l(m);
+    Seguimiento& s = fuentes[fuente];
+    if (s.instancia != instancia) s = Seguimiento{instancia, ahora, 0};
+    if (!REX_LOAD_U32(fuente + 16)) s.sonando_ns += std::min<uint64_t>(ahora - s.ultima_ns, 100'000'000ull);
+    s.ultima_ns = ahora;
+    if (double(s.sonando_ns) / 1e9 <= double(duracion) * 1.5 + 0.5) return;
+    fuentes.erase(fuente);
+  }
+  // As the original's own finished path: WaveInstance->NotifyFinished(), then "finished".
+  const PPCContext guardado = ctx;
+  ctx.r3.u64 = instancia;
+  REX_CALL_INDIRECT_FUNC(0x833AC1D8u);
+  ctx = guardado;
+  ctx.r3.u64 = 1;
+}

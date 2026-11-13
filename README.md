@@ -91,6 +91,7 @@ rexglue-sdk-nx patches (`patches/rexglue-sdk-nx/`):
 | `0005` | A shader variant missing from the cache was compiled while playing | Optional now (`nfsmw_dk_compilar_variantes`) |
 | `0006` | Textures the game writes at run time (the font atlas) were rechecked only every few frames | Letters were missing for a moment when text first appeared |
 | `0007` | A stencil-only clear was remembered as a depth clear, so the full depth clear after it was skipped | World objects in front of you cut away parts of your gun |
+| `0008` | The texture descriptor table had 8,192 entries and filled up during play (~8,000 small textures alive): every new texture then got the empty one | Characters, notes and whole levels after a transition were drawn black; now 32,768 entries, unused textures released above three quarters |
 
 `overrides.toml` declares 277 function entry points the codegen analyzer misses (see singularity-recomp).
 
