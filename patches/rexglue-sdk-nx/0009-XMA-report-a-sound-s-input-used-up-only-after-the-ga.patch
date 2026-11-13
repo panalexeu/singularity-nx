@@ -1,4 +1,4 @@
-From b55822cffcee741b8cd1e54a401f48d84b390007 Mon Sep 17 00:00:00 2001
+From 38e447a29ceafbe223a8dcdd8ea4d82dc08ccf7e Mon Sep 17 00:00:00 2001
 From: Oleksii Horchynskyi <pan.alexeu@gmail.com>
 Date: Fri, 13 Nov 2026 12:48:30 +0200
 Subject: [PATCH] XMA: report a sound's input used up only after the game has
@@ -15,15 +15,15 @@ meanwhile (a stream's next buffer) cancels the wait.
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01CGstJFihyJYNUGR3QC7gUu
 ---
- include/rex/audio/xma/context.h |  4 ++++
- src/audio/xma_context.cpp       | 41 +++++++++++++++++++++++++++++++++
- 2 files changed, 45 insertions(+)
+ include/rex/audio/xma/context.h |  6 +++
+ src/audio/xma_context.cpp       | 66 +++++++++++++++++++++++++++++++++
+ 2 files changed, 72 insertions(+)
 
 diff --git a/include/rex/audio/xma/context.h b/include/rex/audio/xma/context.h
-index 665602b..9c259e6 100644
+index 665602b..2e25038 100644
 --- a/include/rex/audio/xma/context.h
 +++ b/include/rex/audio/xma/context.h
-@@ -288,6 +288,10 @@ class XmaContext {
+@@ -288,6 +288,12 @@ class XmaContext {
    void AnotarProduccion(bool produjo, uint8_t motivo, const XMA_CONTEXT_DATA& data);
    std::chrono::steady_clock::time_point silencio_desde_{};
    bool en_silencio_ = false;
@@ -31,11 +31,13 @@ index 665602b..9c259e6 100644
 +  // bit 0 = buffer 0, bit 1 = buffer 1) stay set until the game has read that output.
 +  bool fin_pendiente_ = false;
 +  uint32_t fin_mascara_ = 0, fin_buffer0_ = 0, fin_buffer1_ = 0;
++  std::chrono::steady_clock::time_point fin_desde_{};
++  bool fin_avisado_ = false;
    uint32_t silencio_pasadas_ = 0;
    uint8_t silencio_motivo_ = 0;
    std::atomic<bool> is_allocated_ = false;
 diff --git a/src/audio/xma_context.cpp b/src/audio/xma_context.cpp
-index a221210..5bdcb0d 100644
+index a221210..180d676 100644
 --- a/src/audio/xma_context.cpp
 +++ b/src/audio/xma_context.cpp
 @@ -58,6 +58,11 @@ REXCVAR_DEFINE_INT32(audio_volcado_xma_contextos, 12, "Audio",
@@ -50,11 +52,12 @@ index a221210..5bdcb0d 100644
  REXCVAR_DEFINE_INT32(audio_volcado_xma_min_s, 2, "Audio",
                       "Diagnostico: segundos minimos de un sonido XMA que se guardan cuando termina");
  
-@@ -398,6 +403,27 @@ bool XmaContext::Work() {
+@@ -398,6 +403,48 @@ bool XmaContext::Work() {
      return true;
    }
  
-+  // audio_xma_fin_tras_drenar: waiting for the game to read the last output before reporting the input used up.
++  // audio_xma_fin_tras_drenar: the input is used up but not yet reported: deliver the rest of the last frame, then
++  // wait for the game to read the output, then report it.
 +  if (fin_pendiente_) {
 +    const bool otra_entrada = data.input_buffer_0_ptr != fin_buffer0_ || data.input_buffer_1_ptr != fin_buffer1_ ||
 +                              ((data.input_buffer_0_valid | (data.input_buffer_1_valid << 1)) & ~fin_mascara_) != 0;
@@ -64,42 +67,66 @@ index a221210..5bdcb0d 100644
 +      if (fin_mascara_ & 2) data.input_buffer_1_valid = 0;
 +      fin_pendiente_ = false;
 +    } else {
-+      if (data.output_buffer_read_offset == data.output_buffer_write_offset) {
-+        // Read: now the input is reported used up (the game's busy -> idle edge comes after its output is drained).
++      // A sound held for 2 s means its output is not being read (it should be a few ms): say so once.
++      if (!fin_avisado_ && std::chrono::steady_clock::now() - fin_desde_ > std::chrono::seconds(2)) {
++        fin_avisado_ = true;
++        REXAPU_WARN("XMA: el contexto {} lleva 2 s sin poder dar su entrada por terminada (subtramas pendientes {}, "
++                    "salida leida {} de {})",
++                    id(), uint32_t(current_frame_remaining_subframes_), uint32_t(data.output_buffer_read_offset),
++                    uint32_t(data.output_buffer_write_offset));
++      }
++      memory::RingBuffer rb = PrepareOutputRingBuffer(&data);
++      uint32_t escritos = 0;
++      while (current_frame_remaining_subframes_) {  // the rest of the last frame, as far as the output has room
++        const uint32_t n = Consume(&rb, &data);
++        if (!n) break;
++        escritos += n;
++      }
++      data.output_buffer_write_offset = rb.write_offset() / kOutputBytesPerBlock;
++      if (escritos && rb.empty()) {
++        data.output_buffer_valid = 0;  // full
++      }
++      if (!current_frame_remaining_subframes_ && data.output_buffer_valid &&
++          data.output_buffer_read_offset == data.output_buffer_write_offset) {
++        // All delivered and read: now the input is reported used up (the game's busy -> idle edge comes after it).
 +        if (fin_mascara_ & 1) data.input_buffer_0_valid = 0;
 +        if (fin_mascara_ & 2) data.input_buffer_1_valid = 0;
 +        fin_pendiente_ = false;
-+        StoreContextMerged(data, initial_data, context_ptr);
 +      }
-+      return true;  // nothing to decode: the input is used up
++      StoreContextMerged(data, initial_data, context_ptr);
++      return true;  // no new input to decode
 +    }
 +  }
 +
    memory::RingBuffer output_rb = PrepareOutputRingBuffer(&data);
    uint32_t output_bytes_written = 0;
  
-@@ -475,6 +501,20 @@ bool XmaContext::Work() {
+@@ -475,6 +522,24 @@ bool XmaContext::Work() {
      data.output_buffer_valid = 0;
    }
  
-+  // audio_xma_fin_tras_drenar: this pass used up the input and left output the game has not read yet: keep the
-+  // input-valid bits set (no more decoding happens, see above) until it has. Measured on the console: every sound that
++  // audio_xma_fin_tras_drenar: this pass used up the input but the last frame is not fully delivered or the game has
++  // not read the output yet: keep the input-valid bits set (see above: the frame is finished, nothing new decoded)
++  // until both are done. Measured on the console: every sound that
 +  // never finished had its last output written in the pass that used up its input, and XAudio2's one-time
 +  // end-of-buffer step (sub_828E22E0, on the busy -> idle edge) ran ~5 ms later, before that output was read.
 +  if (REXCVAR_GET(audio_xma_fin_tras_drenar) && initial_data.IsAnyInputBufferValid() &&
-+      !data.IsAnyInputBufferValid() && !current_frame_remaining_subframes_ && data.error_status != 4 &&
-+      !(data.output_buffer_valid && data.output_buffer_read_offset == data.output_buffer_write_offset)) {
++      !data.IsAnyInputBufferValid() && data.error_status != 4 &&
++      (current_frame_remaining_subframes_ ||
++       !(data.output_buffer_valid && data.output_buffer_read_offset == data.output_buffer_write_offset))) {
 +    fin_mascara_ = uint32_t(initial_data.input_buffer_0_valid) | (uint32_t(initial_data.input_buffer_1_valid) << 1);
 +    fin_buffer0_ = data.input_buffer_0_ptr;
 +    fin_buffer1_ = data.input_buffer_1_ptr;
 +    data.input_buffer_0_valid = initial_data.input_buffer_0_valid;
 +    data.input_buffer_1_valid = initial_data.input_buffer_1_valid;
 +    fin_pendiente_ = true;
++    fin_desde_ = std::chrono::steady_clock::now();
++    fin_avisado_ = false;
 +  }
    StoreContextMerged(data, initial_data, context_ptr);
    AnotarProduccion(output_bytes_written != 0, motivo_silencio, data);  // Measurement only
    return true;
-@@ -521,6 +561,7 @@ void XmaContext::ClearLocked(XMA_CONTEXT_DATA* data) {
+@@ -521,6 +586,7 @@ void XmaContext::ClearLocked(XMA_CONTEXT_DATA* data) {
  }
  
  void XmaContext::ResetDecoderState() {
