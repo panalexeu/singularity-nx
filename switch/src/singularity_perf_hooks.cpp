@@ -136,3 +136,36 @@ REX_HOOK_RAW(sub_828EDF78) {
   sf(p_low, low);
   sf(p_band, band);
 }
+
+// sub_828EE028  the same filter for interleaved stereo: the same parameters, the low and band states two floats each
+//               (left, right), ((count - 1) / 2) + 1 sample pairs, as the PowerPC loop counts them.
+REX_EXTERN(__imp__sub_828EE028);
+REX_HOOK_RAW(sub_828EE028) {
+  if (!REXCVAR_GET(singularity_audio_filtro_nativo)) {
+    __imp__sub_828EE028(ctx, base);
+    return;
+  }
+  auto u32 = [&](uint32_t a) { return rex::memory::load_and_swap<uint32_t>(base + a); };
+  auto lf = [&](uint32_t a) { return std::bit_cast<float>(u32(a)); };
+  auto sf = [&](uint32_t a, float v) { rex::memory::store_and_swap<uint32_t>(base + a, std::bit_cast<uint32_t>(v)); };
+  const uint32_t p = ctx.r3.u32;
+  const uint32_t src = u32(p + 0), dst = u32(p + 4), p_low = u32(p + 8), p_band = u32(p + 12), n = u32(p + 16);
+  const uint32_t mode = u32(p + 24);
+  const float f = lf(p + 28), q = lf(p + 32);
+  float low[2] = {lf(p_low), lf(p_low + 4)}, band[2] = {lf(p_band), lf(p_band + 4)};
+  const uint32_t pares = n ? ((n - 1) >> 1) + 1 : 0;
+  for (uint32_t i = 0; i < pares; ++i) {
+    for (uint32_t c = 0; c < 2; ++c) {
+      const uint32_t at = (i * 2 + c) * 4;
+      const float x = lf(src + at);
+      const float high = std::fmaf(-q, band[c], x - low[c]);
+      band[c] = std::fmaf(high, f, band[c]);
+      low[c] = std::fmaf(band[c], f, low[c]);
+      sf(dst + at, mode == 0 ? low[c] : mode == 1 ? band[c] : mode == 2 ? high : low[c] + high);
+    }
+  }
+  sf(p_low, low[0]);
+  sf(p_low + 4, low[1]);
+  sf(p_band, band[0]);
+  sf(p_band + 4, band[1]);
+}

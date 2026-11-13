@@ -1,0 +1,141 @@
+From 2fd9edc7a8d8b41baa9da032cb072cef3a216cb1 Mon Sep 17 00:00:00 2001
+From: Oleksii Horchynskyi <pan.alexeu@gmail.com>
+Date: Fri, 13 Nov 2026 21:58:05 +0200
+Subject: [PATCH 13/14] Switch: the emulator's own threads can be kept on one
+ core (RexSwitchFijarNucleoHost)
+
+The GPU ring, XMA decoder and audio worker outrank the game's threads and preempted its rendering thread wherever
+they landed. Each follows the chosen core from its own loop.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CGstJFihyJYNUGR3QC7gUu
+---
+ src/audio/audio_system.cpp    |  9 +++++++++
+ src/audio/xma_decoder.cpp     |  9 +++++++++
+ src/core/threading_switch.cpp | 26 ++++++++++++++++++++++++++
+ src/core/threading_switch.h   |  9 +++++++++
+ 4 files changed, 53 insertions(+)
+
+diff --git a/src/audio/audio_system.cpp b/src/audio/audio_system.cpp
+index eefee0e..e92741b 100644
+--- a/src/audio/audio_system.cpp
++++ b/src/audio/audio_system.cpp
+@@ -24,6 +24,9 @@
+ #include <rex/system/thread_state.h>
+ #include <rex/thread.h>
+ #include <rex/cvar.h>
++#if REX_PLATFORM_SWITCH
++#include "../core/threading_switch.h"  // RexSwitchSeguirNucleoHost: the emulator's threads on one core
++#endif
+ 
+ REXCVAR_DEFINE_INT32(
+     audio_maxqframes, 8, "Audio",
+@@ -119,7 +122,13 @@ void AudioSystem::WorkerThreadMain() {
+ 
+   // Main run loop.
+   uint32_t diag_pump_count = 0;
++#if REX_PLATFORM_SWITCH
++  int nucleo_aplicado = -1;
++#endif
+   while (worker_running_) {
++#if REX_PLATFORM_SWITCH
++    RexSwitchSeguirNucleoHost(&nucleo_aplicado);
++#endif
+     // These handles signify the number of submitted samples. Once we reach
+     // 64 samples, we wait until our audio backend releases a semaphore
+     // (signaling a sample has finished playing)
+diff --git a/src/audio/xma_decoder.cpp b/src/audio/xma_decoder.cpp
+index 5c1ec44..0e7ed00 100644
+--- a/src/audio/xma_decoder.cpp
++++ b/src/audio/xma_decoder.cpp
+@@ -29,6 +29,9 @@
+ extern "C" {
+ #include "libavutil/cpu.h"
+ #include "libavutil/log.h"
++#if REX_PLATFORM_SWITCH
++#include "../core/threading_switch.h"  // RexSwitchSeguirNucleoHost: the emulator's threads on one core
++#endif
+ }  // extern "C"
+ 
+ REXCVAR_DEFINE_BOOL(ffmpeg_verbose, false, "Audio", "Verbose FFmpeg output (debug and above)");
+@@ -307,7 +310,13 @@ void InformarXma() {
+ }  // namespace
+ 
+ void XmaDecoder::WorkerThreadMain() {
++#if REX_PLATFORM_SWITCH
++  int nucleo_aplicado = -1;
++#endif
+   while (worker_running_) {
++#if REX_PLATFORM_SWITCH
++    RexSwitchSeguirNucleoHost(&nucleo_aplicado);
++#endif
+     // Okay, let's loop through XMA contexts to find ones we need to decode!
+     bool did_work = false;
+     // First the ones a kick has just enabled: they are reached without walking all 320 or touching their
+diff --git a/src/core/threading_switch.cpp b/src/core/threading_switch.cpp
+index 9743cbc..c83e321 100644
+--- a/src/core/threading_switch.cpp
++++ b/src/core/threading_switch.cpp
+@@ -6,6 +6,7 @@
+  * scheme, which is what decides whether the game stutters or not.
+  */
+ 
++#include <atomic>
+ #include <rex/platform.h>
+ 
+ #if REX_PLATFORM_SWITCH
+@@ -331,6 +332,31 @@ bool RexSwitchPinCurrentThreadToCore(int core) {
+  */
+ int RexSwitchCurrentCore(void) { return int(svcGetCurrentProcessorNumber()); }
+ 
++static std::atomic<int> g_nucleo_host{-1};
++
++void RexSwitchFijarNucleoHost(int core) { g_nucleo_host.store(core, std::memory_order_relaxed); }
++
++void RexSwitchSeguirNucleoHost(int* aplicado) {
++  const int v = g_nucleo_host.load(std::memory_order_relaxed);
++  if (v == *aplicado) {
++    return;
++  }
++  *aplicado = v;
++  if (v >= 0) {
++    RexSwitchPinCurrentThreadToCore(v);
++    return;
++  }
++  // Back to every core of the process, preferring the one it is on.
++  u64 mascara_proceso = 0;
++  if (R_FAILED(svcGetInfo(&mascara_proceso, InfoType_CoreMask, CUR_PROCESS_HANDLE, 0)) || !mascara_proceso) {
++    mascara_proceso = 0x7;
++  }
++  Thread* yo = threadGetSelf();
++  const Handle h = (yo != nullptr) ? yo->handle : CUR_THREAD_HANDLE;
++  const s32 actual = s32(svcGetCurrentProcessorNumber());
++  svcSetThreadCoreMask(h, (mascara_proceso >> actual) & 1 ? actual : -1, mascara_proceso);
++}
++
+ }  // extern "C"
+ 
+ #endif  /* REX_PLATFORM_SWITCH */
+diff --git a/src/core/threading_switch.h b/src/core/threading_switch.h
+index 9560d3d..5161399 100644
+--- a/src/core/threading_switch.h
++++ b/src/core/threading_switch.h
+@@ -169,6 +169,15 @@ bool RexSwitchPinCurrentThreadToCore(int core);
+ /* Which core the calling thread is running on right now. It can only be asked about oneself. */
+ int RexSwitchCurrentCore(void);
+ 
++/*
++ * The core of the emulator's own busy threads (GPU ring, XMA decoder, audio worker): -1 lets them run on every core of
++ * the process (as before), 0-2 keeps them on that one. They outrank the game's threads, so wherever they land they
++ * preempt the game; kept on one core, the game's rendering thread has the other two to itself. Each thread follows the
++ * value from its own loop (RexSwitchSeguirNucleoHost with a variable of its own, starting at -1).
++ */
++void RexSwitchFijarNucleoHost(int core);
++void RexSwitchSeguirNucleoHost(int* aplicado);
++
+ #ifdef __cplusplus
+ }
+ #endif
+-- 
+2.43.0
+

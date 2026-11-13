@@ -1,0 +1,112 @@
+From a259c7529760e56bbd83eaa06e1e5d996453d909 Mon Sep 17 00:00:00 2001
+From: Oleksii Horchynskyi <pan.alexeu@gmail.com>
+Date: Fri, 13 Nov 2026 21:58:05 +0200
+Subject: [PATCH 12/14] Achievement popup closes itself once shown, so the
+ presenter leaves interface-thread painting
+
+The toast dialog lived for the rest of the session after the first achievement, which kept the presenter painting
+from the interface thread: displayed frames dropped and the FPS counter showed 60-100 (interface repaints). It now
+closes when its queue is empty; the next achievement creates a new one.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CGstJFihyJYNUGR3QC7gUu
+---
+ include/rex/rex_app.h                             |  3 ++-
+ include/rex/ui/overlay/achievement_notification.h | 14 ++++++++++++++
+ src/ui/overlay/achievement_toast.cpp              |  3 +++
+ src/ui/rex_app.cpp                                | 10 +++++++---
+ 4 files changed, 26 insertions(+), 4 deletions(-)
+
+diff --git a/include/rex/rex_app.h b/include/rex/rex_app.h
+index 1f52480..0cdb8dc 100644
+--- a/include/rex/rex_app.h
++++ b/include/rex/rex_app.h
+@@ -307,7 +307,8 @@ class ReXApp : public ui::WindowedApp, public ui::WindowListener, public ui::Win
+   std::unique_ptr<ui::ConsoleDialog> console_overlay_;
+   std::unique_ptr<ui::SettingsDialog> settings_overlay_;
+   std::unique_ptr<ui::ImGuiDialog> achievements_overlay_;
+-  std::shared_ptr<ui::AchievementNotificationDialog> achievement_notification_;
++  // Not owned while open: it deletes itself when it has nothing left to show (SetOnClosed clears this).
++  ui::AchievementNotificationDialog* achievement_notification_ = nullptr;
+   uint64_t achievement_notification_listener_ = 0;
+   ui::DebugOverlayDialog::FrameStatsProvider frame_stats_provider_;
+   std::filesystem::path config_path_;
+diff --git a/include/rex/ui/overlay/achievement_notification.h b/include/rex/ui/overlay/achievement_notification.h
+index f9921ed..af1ca8c 100644
+--- a/include/rex/ui/overlay/achievement_notification.h
++++ b/include/rex/ui/overlay/achievement_notification.h
+@@ -10,6 +10,9 @@
+  */
+ #pragma once
+ 
++#include <functional>
++#include <utility>
++
+ #include <rex/system/achievement_manager.h>
+ #include <rex/ui/imgui_dialog.h>
+ 
+@@ -22,8 +25,19 @@ class AchievementNotificationDialog : public ImGuiDialog {
+   // Thread-safe implementations may receive events from guest threads.
+   virtual void Push(const rex::system::AchievementEvent& event) = 0;
+ 
++  // Called on the UI thread when the dialog closes itself; it is deleted right after. A dialog that closes once it has
++  // nothing left to show lets the presenter leave the interface-thread painting it needs while any overlay exists
++  // (which drops displayed frames and makes the FPS counter count interface repaints).
++  void SetOnClosed(std::function<void()> on_closed) { on_closed_ = std::move(on_closed); }
++
+  protected:
+   explicit AchievementNotificationDialog(ImGuiDrawer* drawer) : ImGuiDialog(drawer) {}
++  void OnClose() override {
++    if (on_closed_) on_closed_();
++  }
++
++ private:
++  std::function<void()> on_closed_;
+ };
+ 
+ }  // namespace rex::ui
+diff --git a/src/ui/overlay/achievement_toast.cpp b/src/ui/overlay/achievement_toast.cpp
+index 53b8c0b..a3620a8 100644
+--- a/src/ui/overlay/achievement_toast.cpp
++++ b/src/ui/overlay/achievement_toast.cpp
+@@ -48,6 +48,9 @@ void AchievementToastDialog::OnDraw(ImGuiIO& io) {
+       }
+     }
+     if (queue_.empty()) {
++      // Nothing left to show: the dialog goes (ImGuiDialog::Draw deletes it after this), so the presenter goes back
++      // to painting from the game thread. The next achievement creates a new one.
++      Close();
+       return;
+     }
+     toast = queue_.front();
+diff --git a/src/ui/rex_app.cpp b/src/ui/rex_app.cpp
+index 73742e6..a477aef 100644
+--- a/src/ui/rex_app.cpp
++++ b/src/ui/rex_app.cpp
+@@ -481,8 +481,11 @@ void ReXApp::LaunchModule() {
+             rex::system::AchievementEvent copia = event;
+             app_context().CallInUIThreadDeferred([this, copia]() {
+               if (!achievement_notification_) {
+-                achievement_notification_ = std::shared_ptr<ui::AchievementNotificationDialog>(
+-                    CreateAchievementNotificationDialog());
++                // Not owned: a dialog that closes itself deletes itself, and tells us first.
++                achievement_notification_ = CreateAchievementNotificationDialog().release();
++                if (achievement_notification_) {
++                  achievement_notification_->SetOnClosed([this]() { achievement_notification_ = nullptr; });
++                }
+               }
+               if (achievement_notification_) {
+                 achievement_notification_->Push(copia);
+@@ -626,7 +629,8 @@ void ReXApp::OnDestroy() {
+     }
+     achievement_notification_listener_ = 0;
+   }
+-  achievement_notification_.reset();
++  delete achievement_notification_;  // still open (not closed by itself): its destructor leaves the drawer
++  achievement_notification_ = nullptr;
+   achievements_overlay_.reset();
+   settings_overlay_.reset();
+   console_overlay_.reset();
+-- 
+2.43.0
+

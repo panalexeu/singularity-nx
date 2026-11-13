@@ -1,0 +1,77 @@
+From e9b0aebefcbe7982aeca95d32c4f4ecdc7f7a301 Mon Sep 17 00:00:00 2001
+From: Oleksii Horchynskyi <pan.alexeu@gmail.com>
+Date: Fri, 13 Nov 2026 21:58:05 +0200
+Subject: [PATCH 14/14] deko3d: vertex buffers read by the shader itself are
+ cached like vertex streams (nfsmw_dk_manuales_en_cache)
+
+They were copied whole for every draw (up to 8 MB each): 12-18 MB of uploads a frame in Singularity's dense scenes,
+0.3-1.4 MB with the geometry store and the per-work dedupe; the GPU ring thread went from ~60 % to 22-35 % of a core.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CGstJFihyJYNUGR3QC7gUu
+---
+ src/x360/deko/dibujos.cpp | 40 +++++++++++++++++++++++++++++++++------
+ 1 file changed, 34 insertions(+), 6 deletions(-)
+
+diff --git a/src/x360/deko/dibujos.cpp b/src/x360/deko/dibujos.cpp
+index d9586f9..b4d3914 100644
+--- a/src/x360/deko/dibujos.cpp
++++ b/src/x360/deko/dibujos.cpp
+@@ -65,6 +65,9 @@ REXCVAR_DEFINE_INT32(nfsmw_dk_envio_parcial, 256, "NFSMW",
+                      "que la GPU dibuje mientras la CPU sigue grabando. 0 = un solo envio por fotograma, como antes "
+                      "(Gears of War 2: la GPU esperaba 9-18 ms por fotograma a que se cerrara el trabajo)")
+     .range(0, 100000);
++REXCVAR_DEFINE_BOOL(nfsmw_dk_manuales_en_cache, true, "NFSMW",
++                    "deko3d: los bufers de vertices que lee el propio shader se guardan como los demas (entre "
++                    "fotogramas y dentro de un trabajo) en vez de copiarse enteros en cada dibujo");
+ REXCVAR_DEFINE_BOOL(nfsmw_dk_todas_las_salidas, false, "NFSMW",
+                     "deko3d (depuracion): los vertex shaders siempre con todos sus interpoladores, no solo los que lee "
+                     "el pixel shader");
+@@ -1981,13 +1984,38 @@ bool RenderDk::Dibujar(const PeticionDibujo& p) {
+           direccion + bytes > kMemoriaFisica) {
+         return Rechazar(27, "bufer de vertices leido por el shader invalido o demasiado grande");
+       }
+-      const deko::Subida s = nucleo_.Reservar(bytes, 16);
+-      if (!s) {
+-        return Rechazar(13, "sin sitio en el anillo de subida");
++      // Kept like the vertex streams: across frames in the geometry store and within a work by the dedupe. Copied
++      // whole for every draw, a buffer the shader reads itself (up to 8 MB) went into the upload slot each time.
++      const uint8_t* datos = memoria_->TranslatePhysical(uint32_t(direccion));
++      const xenos::Endian orden_manual = static_cast<xenos::Endian>(d1 & 0x3);
++      DkGpuAddr gpu = 0;
++      if (REXCVAR_GET(nfsmw_dk_manuales_en_cache) && geometria_.activo()) {
++        const deko::AlmacenGeometria::Resultado en_almacen = geometria_.Buscar(
++            datos, bytes, uint64_t(orden_manual) | (uint64_t(1) << 61), bytes,
++            [&](uint8_t* destino, uint32_t&, uint32_t&) {
++              CopiarVertices(TrabajoCopia{datos, destino, bytes / 4, orden_manual});
++            });
++        if (en_almacen.gpu) {
++          geometria_.Usar(en_almacen.entrada, trabajo_);
++          gpu = en_almacen.gpu;
++        }
++      }
++      const uint32_t orden_dedupe = uint32_t(orden_manual) | 0x200u;
++      uint64_t ya = 0;
++      if (!gpu && REXCVAR_GET(nfsmw_dk_manuales_en_cache) &&
++          dedupe_.Buscar(uint64_t(reinterpret_cast<uintptr_t>(datos)), bytes, orden_dedupe, ya)) {
++        gpu = DkGpuAddr(ya);
++      }
++      if (!gpu) {
++        const deko::Subida s = nucleo_.Reservar(bytes, 16);
++        if (!s) {
++          return Rechazar(13, "sin sitio en el anillo de subida");
++        }
++        CopiarVertices(TrabajoCopia{datos, s.cpu, bytes / 4, orden_manual});
++        dedupe_.Anotar(uint64_t(reinterpret_cast<uintptr_t>(datos)), bytes, orden_dedupe, uint64_t(s.gpu));
++        gpu = s.gpu;
+       }
+-      CopiarVertices(TrabajoCopia{memoria_->TranslatePhysical(uint32_t(direccion)), s.cpu, bytes / 4,
+-                                  static_cast<xenos::Endian>(d1 & 0x3)});
+-      dkCmdBufBindStorageBuffer(cmd, DkStage_Vertex, uint32_t(b), s.gpu, bytes);
++      dkCmdBufBindStorageBuffer(cmd, DkStage_Vertex, uint32_t(b), gpu, bytes);
+     }
+     const deko::Subida descriptores = nucleo_.Reservar(256, DK_UNIFORM_BUF_ALIGNMENT);
+     if (!descriptores) {
+-- 
+2.43.0
+

@@ -90,6 +90,9 @@ REXCVAR_DECLARE(bool, switch_captura_pedida);  // ZL + ZR + Down (sdk/src/input/
 REXCVAR_DECLARE(bool, switch_volcado_pedido);  // ZL + ZR + Left: every resolved texture of the next frame
 REXCVAR_DECLARE(bool, nfsmw_dk_todas_las_salidas);  // skip mode 9 (SDK patch 0033)
 REXCVAR_DECLARE(bool, nfsmw_dk_gamma_lineal);       // skip mode 10 (SDK patch 0033)
+// SDK core/threading_switch.h: the emulator's own threads on one core (singularity_nucleo_emulador).
+extern "C" void RexSwitchFijarNucleoHost(int core);
+extern "C" void RexSwitchSeguirNucleoHost(int* aplicado);
 REXCVAR_DECLARE(std::string, rex_archivos_ocultos);  // SDK patch 0048: files the game does not find
 REXCVAR_DECLARE(bool, switch_omitir_pedido);   // ZL + ZR + Right: next draw-skipping mode (SkipMode)
 // The SDK renderer's shadow-pass shortcuts (sdk/src/x360/deko/destinos.cpp; the SDK keeps their nfsmw_ names): both
@@ -199,6 +202,10 @@ REXCVAR_DEFINE_BOOL(singularity_arboles_prueba, false, "Singularity",
 REXCVAR_DEFINE_INT32(singularity_auto_volcado_dibujos, 800, "Singularity",
                      "Dibujos que debe tener el fotograma anterior para un volcado automatico (la escena 3D, no un menu)");
 REXCVAR_DEFINE_INT32(singularity_auto_volcados_max, 4, "Singularity", "Volcados automaticos como mucho (0 = ninguno)");
+REXCVAR_DEFINE_INT32(singularity_nucleo_emulador, 2, "Singularity",
+                     "Nucleo de los hilos propios del emulador (anillo de la GPU, decodificador XMA, audio): fuera de los "
+                     "nucleos 0 y 1 no le quitan la CPU al hilo de render del juego, que tiene menos prioridad. -1 = "
+                     "cualquier nucleo (como antes)");
 REXCVAR_DEFINE_INT32(singularity_traza_cada_s, 60, "Singularity", "Segundos entre trazas de la estructura de un fotograma pesado");
 REXCVAR_DEFINE_INT32(singularity_trazas_max, 20, "Singularity", "Trazas de fotograma como mucho");
 REXCVAR_DEFINE_BOOL(singularity_perfil_pilas, true, "Singularity",
@@ -373,6 +380,12 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     ring_thread_ = rex::system::object_ref<rex::system::XHostThread>(new rex::system::XHostThread(
         kernel_state_, 128 * 1024, 0, [this]() { return RingLoop(); }));
     ring_thread_->set_name("GPU ring");
+    // singularity_nucleo_emulador: the ring, the XMA decoder and the audio worker each move there from their own loop.
+    RexSwitchFijarNucleoHost(REXCVAR_GET(singularity_nucleo_emulador));
+    REXLOG_INFO("[gpu] emulator threads (GPU ring, XMA decoder, audio worker): {}",
+                REXCVAR_GET(singularity_nucleo_emulador) < 0
+                    ? std::string("any core")
+                    : fmt::format("core {}", REXCVAR_GET(singularity_nucleo_emulador)));
     ring_thread_->Create();
     REXLOG_INFO("[gpu] ring reader started");
     // The startup logos: the game skips a movie it cannot open (as it does with the _RUS ones it looks for first).
@@ -619,7 +632,9 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
   int RingLoop() {
     uint32_t read = 0;
     uint32_t generation = 0;
+    int nucleo_aplicado = -1;  // RexSwitchSeguirNucleoHost
     while (active_.load(std::memory_order_acquire)) {
+      RexSwitchSeguirNucleoHost(&nucleo_aplicado);
       {
         std::unique_lock<std::mutex> lock(ring_mutex_);
         ring_dormido_.store(true, std::memory_order_seq_cst);
