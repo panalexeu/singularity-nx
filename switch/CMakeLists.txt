@@ -41,7 +41,7 @@ target_compile_definitions(singularity PRIVATE SINGULARITY_DEKO3D=1)
 target_link_libraries(singularity PRIVATE mspack)
 target_include_directories(singularity PRIVATE ${SINGULARITY_SHADER_TOOLS} ${REXSDK_DIR}/thirdparty/xxHash)
 
-set(SINGULARITY_VERSION "0.2.0")
+set(SINGULARITY_VERSION "0.3")
 execute_process(COMMAND git rev-parse --short=10 HEAD WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
                 OUTPUT_VARIABLE SINGULARITY_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
 if(NOT SINGULARITY_COMMIT)
@@ -53,7 +53,7 @@ target_compile_definitions(singularity PRIVATE SINGULARITY_VERSION="${SINGULARIT
 if(REXGLUE_PLATFORM_SWITCH)
     rexglue_switch_add_nro(singularity
         NAME "Singularity"
-        AUTHOR "singularity-recomp"
+        AUTHOR "alexeu"
         VERSION "${SINGULARITY_VERSION}"
         ICON "${CMAKE_CURRENT_SOURCE_DIR}/icon.jpg")  # 256x256 baseline JPEG
 endif()

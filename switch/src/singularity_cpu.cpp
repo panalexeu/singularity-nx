@@ -38,16 +38,16 @@ void InformarSistema() {
 #if defined(__SWITCH__)
   const u32 hos = hosversionGet();
   const bool aplicacion = appletGetAppletType() == AppletType_Application;
-  REXLOG_INFO("gears2-nx {} (commit {}), firmware {}.{}.{}{}, {}, {}", SINGULARITY_VERSION, SINGULARITY_COMMIT, HOSVER_MAJOR(hos),
+  REXLOG_INFO("singularity-nx {} (commit {}), firmware {}.{}.{}{}, {}, {}", SINGULARITY_VERSION, SINGULARITY_COMMIT, HOSVER_MAJOR(hos),
               HOSVER_MINOR(hos), HOSVER_MICRO(hos), hosversionIsAtmosphere() ? " (Atmosphere)" : "",
               aplicacion ? "title takeover" : "APPLET MODE",
               appletGetOperationMode() == AppletOperationMode_Handheld ? "handheld" : "docked");
   if (!aplicacion) {
-    REXLOG_WARN("gears2-nx: started as an applet (from the album?): not enough memory for the game. Start any game while "
+    REXLOG_WARN("singularity-nx: started as an applet (from the album?): not enough memory for the game. Start any game while "
                 "holding R and open the Homebrew Menu from there");
   }
 #else
-  REXLOG_INFO("gears2-nx {} (commit {})", SINGULARITY_VERSION, SINGULARITY_COMMIT);
+  REXLOG_INFO("singularity-nx {} (commit {})", SINGULARITY_VERSION, SINGULARITY_COMMIT);
 #endif
 }
 
