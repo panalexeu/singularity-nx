@@ -1,0 +1,144 @@
+From 2b46d5a15dc356632e32c3220aa972b19ae0aebc Mon Sep 17 00:00:00 2001
+From: Oleksii Horchynskyi <pan.alexeu@gmail.com>
+Date: Fri, 13 Nov 2026 16:43:00 +0200
+Subject: [PATCH] deko3d: merge a depth target drawn after its resolve into the
+ resolved texture (FusionarProfundidadPosterior); dumps read Z24S8 depth from
+ its upper 24 bits
+
+- FusionarProfundidadPosterior: the depth target last resolved to a texture is copied into that texture again,
+  keeping the nearer depth (Greater, reverse Z). A game calls it before post-processing that samples the
+  texture, so what was drawn after the resolve (a first-person weapon after its own depth clear) is in it.
+- Copiar3D: z_mas_cerca (depth compare Greater instead of Always).
+- Frame dumps: deko3d's Z24S8 keeps depth in the upper 24 bits and stencil in the lower 8; the dump read the
+  lower 24 bits and a smooth floor came out as a sawtooth.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CGstJFihyJYNUGR3QC7gUu
+---
+ include/rex/x360/deko/render.h |  8 ++++++-
+ include/rex/x360/destinos.h    |  4 ++++
+ src/x360/deko/destinos.cpp     | 43 ++++++++++++++++++++++++++++++----
+ 3 files changed, 50 insertions(+), 5 deletions(-)
+
+diff --git a/include/rex/x360/deko/render.h b/include/rex/x360/deko/render.h
+index a2b5fe8..c7f0cb1 100644
+--- a/include/rex/x360/deko/render.h
++++ b/include/rex/x360/deko/render.h
+@@ -182,6 +182,7 @@ class RenderDk final : public DestinosNativos {
+   void EstadisticasOclusion(uint64_t valores[5]) const override;
+   bool Dibujar(const PeticionDibujo& peticion) override;  // nfsmw_dk_dibujos.cpp
+   void PedirVolcado() override { volcado_pedido_ = true; }
++  bool FusionarProfundidadPosterior() override;
+   EstadisticasDibujos EstadisticasDeDibujos() const override;
+   void EsperarSubidas() override {}  // vertices are copied on the ring thread, before Dibujar returns
+   uint64_t CopiasProfundidad() const override { return copias_profundidad_; }
+@@ -240,7 +241,12 @@ class RenderDk final : public DestinosNativos {
+   // modos_signo (4 ints, per destination channel): 0 copy, 1 signed 8-bit, 2 biased (2x - 1); nullptr: plain copy.
+   bool Copiar3D(const ImagenDk& origen, uint32_t x0, uint32_t y0, uint32_t ancho, uint32_t alto, ImagenDk& destino,
+                 uint32_t dx, uint32_t dy, const int32_t* modos_signo = nullptr, bool limitar_7e3 = false,
+-                float escala = 1.0f);  // 2^copy_dest_exp_bias (RB_COPY_DEST_INFO bits 16-21)
++                float escala = 1.0f,  // 2^copy_dest_exp_bias (RB_COPY_DEST_INFO bits 16-21)
++                bool z_mas_cerca = false);  // depth: only where the source is nearer (Greater), not Always
++  // The last depth resolve to a texture (CopiarProfundidad): its target and texture, for FusionarProfundidadPosterior.
++  uint32_t ultima_z_info_ = 0, ultima_z_pitch_ = 0, ultima_z_textura_ = 0;
++  std::array<uint32_t, 6> ultima_z_rect_{};  // source x, y, width, height; destination x, y
++  bool ultima_z_valida_ = false;
+   bool rop_sin_barrera_ = true;
+   bool copia3d_pendiente_ = false;
+   uint64_t copias_3d_ = 0, barreras_fragmentos_ = 0;
+diff --git a/include/rex/x360/destinos.h b/include/rex/x360/destinos.h
+index 8175113..3b37907 100644
+--- a/include/rex/x360/destinos.h
++++ b/include/rex/x360/destinos.h
+@@ -117,6 +117,10 @@ class DestinosNativos {
+   virtual bool Dibujar(const PeticionDibujo& peticion) = 0;
+   // Debugging: every texture resolved during the next frame is written to the SD card as a BMP (a backend that can).
+   virtual void PedirVolcado() {}
++  // The depth target last resolved to a texture, merged into that texture keeping the nearer depth (reverse Z: the
++  // larger value): what was drawn there after the resolve (a first-person weapon after its own depth clear) reaches
++  // the post-processing that samples the texture. false if there was nothing to merge.
++  virtual bool FusionarProfundidadPosterior() { return false; }
+   virtual EstadisticasDibujos EstadisticasDeDibujos() const = 0;
+   // Deferred vertex copies finished: before returning the read pointer to the game.
+   virtual void EsperarSubidas() = 0;
+diff --git a/src/x360/deko/destinos.cpp b/src/x360/deko/destinos.cpp
+index e2e1975..65e0421 100644
+--- a/src/x360/deko/destinos.cpp
++++ b/src/x360/deko/destinos.cpp
+@@ -700,7 +700,7 @@ void RenderDk::AntesDe3D() {
+ 
+ bool RenderDk::Copiar3D(const ImagenDk& origen, uint32_t x0, uint32_t y0, uint32_t ancho, uint32_t alto,
+                         ImagenDk& destino, uint32_t dx, uint32_t dy, const int32_t* modos_signo, bool limitar_7e3,
+-                        float escala) {
++                        float escala, bool z_mas_cerca) {
+   const bool z = destino.profundidad;
+   limitar_7e3 = limitar_7e3 && !z && !modos_signo && fs_copia_7e3_valido_;
+   if (!vs_salida_valido_ || !(z ? fs_copia_profundidad_valido_ : fs_copia_color_valido_) ||
+@@ -766,7 +766,7 @@ bool RenderDk::Copiar3D(const ImagenDk& origen, uint32_t x0, uint32_t y0, uint32
+   dkDepthStencilStateDefaults(&ds);
+   ds.depthTestEnable = z;
+   ds.depthWriteEnable = z;
+-  ds.depthCompareOp = DkCompareOp_Always;
++  ds.depthCompareOp = z && z_mas_cerca ? DkCompareOp_Greater : DkCompareOp_Always;
+   ds.stencilTestEnable = false;
+   dkCmdBufBindRasterizerState(cmd, &rs);
+   dkCmdBufBindColorState(cmd, &cs);
+@@ -1674,9 +1674,42 @@ void RenderDk::CopiarProfundidad(const RegistrosCopia& reg, uint32_t pitch, bool
+   if (volcando_) {
+     VolcarResuelta(resuelta->imagen, base, resuelta->formato_guest);
+   }
++  // For FusionarProfundidadPosterior: which target went into which texture, and where.
++  ultima_z_info_ = info;
++  ultima_z_pitch_ = pitch;
++  ultima_z_textura_ = base;
++  ultima_z_rect_ = {uint32_t(x0), uint32_t(y0), ancho, alto, dx, dy};
++  ultima_z_valida_ = true;
+   OlvidarEstado();
+ }
+ 
++bool RenderDk::FusionarProfundidadPosterior() {
++  if (!ultima_z_valida_) {
++    return false;
++  }
++  ultima_z_valida_ = false;  // once per resolve
++  ImagenDk* profundidad = DestinoProfundidad(ultima_z_info_ & 0xFFF, (ultima_z_info_ >> 16) & 0x1, ultima_z_pitch_);
++  const auto it = resueltas_.find(ultima_z_textura_);
++  if (!profundidad || it == resueltas_.end() || !it->second.imagen.profundidad || profundidad->contenido_invalido) {
++    return false;
++  }
++  Resuelta& resuelta = it->second;
++  const auto& r = ultima_z_rect_;
++  if (r[2] == 0 || r[3] == 0 || r[0] + r[2] > profundidad->ancho || r[1] + r[3] > profundidad->alto ||
++      r[4] + r[2] > resuelta.imagen.ancho || r[5] + r[3] > resuelta.imagen.alto) {
++    return false;
++  }
++  AsegurarTrabajo();
++  EmitirCieloPendiente();
++  HacerBorradoPendiente(*profundidad);  // a clear still pending is the target's real content
++  if (!Copiar3D(*profundidad, r[0], r[1], r[2], r[3], resuelta.imagen, r[4], r[5], nullptr, false, 1.0f, true)) {
++    return false;
++  }
++  ++resuelta.imagen.version;
++  OlvidarEstado();
++  return true;
++}
++
+ // ---- nfsmw_nativo_sombra_minimo (the Vulkan backend's, nfsmw_nativo_destinos.cpp, with the same guards)
+ 
+ void RenderDk::SombraMinimoDiferencia(const char* motivo, uint32_t dato) {
+@@ -2907,8 +2940,10 @@ void RenderDk::TerminarVolcado() {
+           std::memcpy(&t[1], datos + i * 8 + 4, 4);
+           break;
+         case DkImageFormat_Z24S8:
+-          t[0] = float(v & 0xFFFFFF);  // normalized below by the image's range
+-          t[3] = float(v >> 24) / 255.0f;
++          // deko3d's Z24S8 keeps the depth in the upper 24 bits and the stencil in the lower 8 (read as the lower 24
++          // bits, a smooth floor came out as a sawtooth).
++          t[0] = float(v >> 8);  // normalized below by the image's range
++          t[3] = float(v & 0xFF) / 255.0f;
+           break;
+         default:
+           break;
+-- 
+2.43.0
+

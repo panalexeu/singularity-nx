@@ -191,6 +191,9 @@ REXCVAR_DEFINE_BOOL(singularity_velocidad_sin_z, false, "Singularity",
                     "la profundidad reducida (5A0, 640x360)");
 REXCVAR_DEFINE_BOOL(singularity_velocidad_prueba, false, "Singularity",
                     "ZL+ZR+Right cambia singularity_velocidad_sin_z con una captura, en vez de los modos de busqueda");
+REXCVAR_DEFINE_BOOL(singularity_dof_arma, true, "Singularity",
+                    "La profundidad del arma en primera persona se suma a la que lee la profundidad de campo: sin ella, "
+                    "delante del cielo el arma se mezclaba a medias con el cielo desenfocado y parecia transparente");
 REXCVAR_DEFINE_BOOL(singularity_arboles_prueba, false, "Singularity",
                     "ZL+ZR+Right cambia el modo de los arboles (0, 1, 2) con una captura, en vez de los modos de busqueda");
 REXCVAR_DEFINE_INT32(singularity_auto_volcado_dibujos, 800, "Singularity",
@@ -1732,6 +1735,18 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       ++generacion_constantes_vs_;
       request.generacion_constantes_vs = generacion_constantes_vs_;
     }
+    // singularity_dof_arma: the depth of field's blur pass (PS 45798833042698A5) and the final composite
+    // (PS 18376612FA2C403D) weigh the blur by the scene depth resolved before the first-person weapon was drawn. The
+    // weapon's pixels got the depth behind them: in front of the sky (past the far plane) half of each became the
+    // blurred sky, and the gun looked see-through. The weapon's depth is merged into that texture first.
+    if (REXCVAR_GET(singularity_dof_arma) && ps_ &&
+        (ps_->huella_contenedor == UINT64_C(0x45798833042698A5) ||
+         ps_->huella_contenedor == UINT64_C(0x18376612FA2C403D))) {
+      if (destinos_->FusionarProfundidadPosterior() && !dof_merge_logged_) {
+        dof_merge_logged_ = true;
+        REXLOG_INFO("[gpu] depth of field: the weapon's depth merged into the post-processing depth (first time)");
+      }
+    }
     const bool drawn = destinos_->Dibujar(request);
     if (tree_identity) {
       for (uint32_t i = 0; i < 48; ++i) registers_[0x4000 + 11 * 4 + i] = saved_sway[i];
@@ -2722,6 +2737,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
   const rex::x360::EntradaShader* ps_ = nullptr;
   std::unordered_map<uint64_t, uint64_t> vs_generations_;
   uint64_t generacion_vs_ = 0, generacion_constantes_vs_ = 0, generacion_constantes_ps_ = 0;
+  bool dof_merge_logged_ = false;  // singularity_dof_arma: said once that the merge works
   uint64_t generacion_fetch_ = 0, generacion_encuadre_ = 0;
   uint64_t geometria_ = 0, enviados_ = 0, sin_vs_ = 0, sin_ps_ = 0;
   std::unordered_map<uint64_t, uint64_t> unknown_vs_skips_;          // microcode hash -> draws skipped

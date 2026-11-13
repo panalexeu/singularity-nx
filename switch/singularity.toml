@@ -28,3 +28,6 @@ singularity_sin_prepaso_z = true
 
 # Also skip the masked (alpha-tested) depth prepass: drawn, windows, rubbish and debris showed old frames.
 singularity_sin_prepaso_enmascarado = true
+# The first-person weapon's depth merged into the depth the depth of field reads (on). Off: in front of the sky or a
+# window the weapon was half replaced by the blurred background and looked see-through.
+singularity_dof_arma = true
