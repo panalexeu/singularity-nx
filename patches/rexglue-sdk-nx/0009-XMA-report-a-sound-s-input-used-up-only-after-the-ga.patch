@@ -1,0 +1,112 @@
+From b55822cffcee741b8cd1e54a401f48d84b390007 Mon Sep 17 00:00:00 2001
+From: Oleksii Horchynskyi <pan.alexeu@gmail.com>
+Date: Fri, 13 Nov 2026 12:48:30 +0200
+Subject: [PATCH] XMA: report a sound's input used up only after the game has
+ read the last output (audio_xma_fin_tras_drenar)
+
+The game's XAudio2 retires a playing buffer once, on the tick its busy check sees the voice's input-valid bits go
+from set to clear (sub_828E2C40 -> sub_828E22E0). When the decoder pass that used up the input also wrote the last
+output, that edge came ~5 ms later while the output was still unread: XAudio2 completed the buffer only after its
+one-time end step had run, kept it queued forever, and the sound never finished (~20 % of sounds; in Singularity the
+audio tapes' speech, chained after the tape noise, never started). Now such a pass keeps the input-valid bits set and
+decodes nothing more until the output has been read (read offset = write offset), then clears them; new input queued
+meanwhile (a stream's next buffer) cancels the wait.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CGstJFihyJYNUGR3QC7gUu
+---
+ include/rex/audio/xma/context.h |  4 ++++
+ src/audio/xma_context.cpp       | 41 +++++++++++++++++++++++++++++++++
+ 2 files changed, 45 insertions(+)
+
+diff --git a/include/rex/audio/xma/context.h b/include/rex/audio/xma/context.h
+index 665602b..9c259e6 100644
+--- a/include/rex/audio/xma/context.h
++++ b/include/rex/audio/xma/context.h
+@@ -288,6 +288,10 @@ class XmaContext {
+   void AnotarProduccion(bool produjo, uint8_t motivo, const XMA_CONTEXT_DATA& data);
+   std::chrono::steady_clock::time_point silencio_desde_{};
+   bool en_silencio_ = false;
++  // audio_xma_fin_tras_drenar: the input ran out in a pass that also wrote output; the input-valid bits (fin_mascara_:
++  // bit 0 = buffer 0, bit 1 = buffer 1) stay set until the game has read that output.
++  bool fin_pendiente_ = false;
++  uint32_t fin_mascara_ = 0, fin_buffer0_ = 0, fin_buffer1_ = 0;
+   uint32_t silencio_pasadas_ = 0;
+   uint8_t silencio_motivo_ = 0;
+   std::atomic<bool> is_allocated_ = false;
+diff --git a/src/audio/xma_context.cpp b/src/audio/xma_context.cpp
+index a221210..5bdcb0d 100644
+--- a/src/audio/xma_context.cpp
++++ b/src/audio/xma_context.cpp
+@@ -58,6 +58,11 @@ REXCVAR_DEFINE_INT32(audio_volcado_xma_contextos, 12, "Audio",
+                      "Diagnostico: contextos XMA que se vuelcan como mucho");
+ REXCVAR_DEFINE_INT32(audio_volcado_xma_mb, 32, "Audio",
+                      "Diagnostico: megas como mucho de audio XMA acumulado sin escribir");
++REXCVAR_DEFINE_BOOL(audio_xma_fin_tras_drenar, true, "Audio",
++                    "A sound's input is reported used up (input-valid bits cleared) only once the game has read the "
++                    "output the last pass wrote. The game's XAudio2 retires a buffer once, on the tick its input runs "
++                    "out: with output still unread it completes the buffer afterwards and never retires it (the sound "
++                    "never finishes; the audio tapes' speech never started)");
+ REXCVAR_DEFINE_INT32(audio_volcado_xma_min_s, 2, "Audio",
+                      "Diagnostico: segundos minimos de un sonido XMA que se guardan cuando termina");
+ 
+@@ -398,6 +403,27 @@ bool XmaContext::Work() {
+     return true;
+   }
+ 
++  // audio_xma_fin_tras_drenar: waiting for the game to read the last output before reporting the input used up.
++  if (fin_pendiente_) {
++    const bool otra_entrada = data.input_buffer_0_ptr != fin_buffer0_ || data.input_buffer_1_ptr != fin_buffer1_ ||
++                              ((data.input_buffer_0_valid | (data.input_buffer_1_valid << 1)) & ~fin_mascara_) != 0;
++    if (otra_entrada) {
++      // New input queued meanwhile (a stream's next buffer): the held buffers are used up, decode the new one.
++      if (fin_mascara_ & 1) data.input_buffer_0_valid = 0;
++      if (fin_mascara_ & 2) data.input_buffer_1_valid = 0;
++      fin_pendiente_ = false;
++    } else {
++      if (data.output_buffer_read_offset == data.output_buffer_write_offset) {
++        // Read: now the input is reported used up (the game's busy -> idle edge comes after its output is drained).
++        if (fin_mascara_ & 1) data.input_buffer_0_valid = 0;
++        if (fin_mascara_ & 2) data.input_buffer_1_valid = 0;
++        fin_pendiente_ = false;
++        StoreContextMerged(data, initial_data, context_ptr);
++      }
++      return true;  // nothing to decode: the input is used up
++    }
++  }
++
+   memory::RingBuffer output_rb = PrepareOutputRingBuffer(&data);
+   uint32_t output_bytes_written = 0;
+ 
+@@ -475,6 +501,20 @@ bool XmaContext::Work() {
+     data.output_buffer_valid = 0;
+   }
+ 
++  // audio_xma_fin_tras_drenar: this pass used up the input and left output the game has not read yet: keep the
++  // input-valid bits set (no more decoding happens, see above) until it has. Measured on the console: every sound that
++  // never finished had its last output written in the pass that used up its input, and XAudio2's one-time
++  // end-of-buffer step (sub_828E22E0, on the busy -> idle edge) ran ~5 ms later, before that output was read.
++  if (REXCVAR_GET(audio_xma_fin_tras_drenar) && initial_data.IsAnyInputBufferValid() &&
++      !data.IsAnyInputBufferValid() && !current_frame_remaining_subframes_ && data.error_status != 4 &&
++      !(data.output_buffer_valid && data.output_buffer_read_offset == data.output_buffer_write_offset)) {
++    fin_mascara_ = uint32_t(initial_data.input_buffer_0_valid) | (uint32_t(initial_data.input_buffer_1_valid) << 1);
++    fin_buffer0_ = data.input_buffer_0_ptr;
++    fin_buffer1_ = data.input_buffer_1_ptr;
++    data.input_buffer_0_valid = initial_data.input_buffer_0_valid;
++    data.input_buffer_1_valid = initial_data.input_buffer_1_valid;
++    fin_pendiente_ = true;
++  }
+   StoreContextMerged(data, initial_data, context_ptr);
+   AnotarProduccion(output_bytes_written != 0, motivo_silencio, data);  // Measurement only
+   return true;
+@@ -521,6 +561,7 @@ void XmaContext::ClearLocked(XMA_CONTEXT_DATA* data) {
+ }
+ 
+ void XmaContext::ResetDecoderState() {
++  fin_pendiente_ = false;
+   ReiniciarVolcadoXma(id());  // diagnostico audio_volcado_xma_s
+   // A freed or re-initialized context is a new logical stream, so the previous
+   // wave's MDCT overlap-add tail must not survive into frame 0 of the next one.
+-- 
+2.43.0
+
