@@ -1,0 +1,102 @@
+From 4308dd1ae0a1d0c9c32ed50185b65c0477d6d90c Mon Sep 17 00:00:00 2001
+From: Oleksii Horchynskyi <pan.alexeu@gmail.com>
+Date: Fri, 13 Nov 2026 22:14:50 +0200
+Subject: [PATCH] Switch: the audio threads follow a core setting of their own
+ (RexSwitchFijarNucleoAudio)
+
+On the GPU ring's core, with more priority than the ring, the XMA decoder left it no room (ring 50 % + XMA 30 %).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CGstJFihyJYNUGR3QC7gUu
+---
+ src/audio/audio_system.cpp    |  4 ++--
+ src/audio/xma_decoder.cpp     |  4 ++--
+ src/core/threading_switch.cpp | 11 +++++++++--
+ src/core/threading_switch.h   |  3 +++
+ 4 files changed, 16 insertions(+), 6 deletions(-)
+
+diff --git a/src/audio/audio_system.cpp b/src/audio/audio_system.cpp
+index e92741b..9faaeec 100644
+--- a/src/audio/audio_system.cpp
++++ b/src/audio/audio_system.cpp
+@@ -25,7 +25,7 @@
+ #include <rex/thread.h>
+ #include <rex/cvar.h>
+ #if REX_PLATFORM_SWITCH
+-#include "../core/threading_switch.h"  // RexSwitchSeguirNucleoHost: the emulator's threads on one core
++#include "../core/threading_switch.h"  // RexSwitchSeguirNucleoAudio: the audio threads' core
+ #endif
+ 
+ REXCVAR_DEFINE_INT32(
+@@ -127,7 +127,7 @@ void AudioSystem::WorkerThreadMain() {
+ #endif
+   while (worker_running_) {
+ #if REX_PLATFORM_SWITCH
+-    RexSwitchSeguirNucleoHost(&nucleo_aplicado);
++    RexSwitchSeguirNucleoAudio(&nucleo_aplicado);
+ #endif
+     // These handles signify the number of submitted samples. Once we reach
+     // 64 samples, we wait until our audio backend releases a semaphore
+diff --git a/src/audio/xma_decoder.cpp b/src/audio/xma_decoder.cpp
+index 0e7ed00..80169c4 100644
+--- a/src/audio/xma_decoder.cpp
++++ b/src/audio/xma_decoder.cpp
+@@ -30,7 +30,7 @@ extern "C" {
+ #include "libavutil/cpu.h"
+ #include "libavutil/log.h"
+ #if REX_PLATFORM_SWITCH
+-#include "../core/threading_switch.h"  // RexSwitchSeguirNucleoHost: the emulator's threads on one core
++#include "../core/threading_switch.h"  // RexSwitchSeguirNucleoAudio: the audio threads' core
+ #endif
+ }  // extern "C"
+ 
+@@ -315,7 +315,7 @@ void XmaDecoder::WorkerThreadMain() {
+ #endif
+   while (worker_running_) {
+ #if REX_PLATFORM_SWITCH
+-    RexSwitchSeguirNucleoHost(&nucleo_aplicado);
++    RexSwitchSeguirNucleoAudio(&nucleo_aplicado);
+ #endif
+     // Okay, let's loop through XMA contexts to find ones we need to decode!
+     bool did_work = false;
+diff --git a/src/core/threading_switch.cpp b/src/core/threading_switch.cpp
+index c83e321..5f56385 100644
+--- a/src/core/threading_switch.cpp
++++ b/src/core/threading_switch.cpp
+@@ -334,10 +334,17 @@ int RexSwitchCurrentCore(void) { return int(svcGetCurrentProcessorNumber()); }
+ 
+ static std::atomic<int> g_nucleo_host{-1};
+ 
++static std::atomic<int> g_nucleo_audio{-1};
++
+ void RexSwitchFijarNucleoHost(int core) { g_nucleo_host.store(core, std::memory_order_relaxed); }
++void RexSwitchFijarNucleoAudio(int core) { g_nucleo_audio.store(core, std::memory_order_relaxed); }
++
++static void SeguirNucleo(int v, int* aplicado);
++
++void RexSwitchSeguirNucleoHost(int* aplicado) { SeguirNucleo(g_nucleo_host.load(std::memory_order_relaxed), aplicado); }
++void RexSwitchSeguirNucleoAudio(int* aplicado) { SeguirNucleo(g_nucleo_audio.load(std::memory_order_relaxed), aplicado); }
+ 
+-void RexSwitchSeguirNucleoHost(int* aplicado) {
+-  const int v = g_nucleo_host.load(std::memory_order_relaxed);
++static void SeguirNucleo(int v, int* aplicado) {
+   if (v == *aplicado) {
+     return;
+   }
+diff --git a/src/core/threading_switch.h b/src/core/threading_switch.h
+index 5161399..78824a5 100644
+--- a/src/core/threading_switch.h
++++ b/src/core/threading_switch.h
+@@ -177,6 +177,9 @@ int RexSwitchCurrentCore(void);
+  */
+ void RexSwitchFijarNucleoHost(int core);
+ void RexSwitchSeguirNucleoHost(int* aplicado);
++/* The same for the audio threads (XMA decoder, audio worker), separately: -1 every core. */
++void RexSwitchFijarNucleoAudio(int core);
++void RexSwitchSeguirNucleoAudio(int* aplicado);
+ 
+ #ifdef __cplusplus
+ }
+-- 
+2.43.0
+
