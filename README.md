@@ -4,6 +4,8 @@
 
 ---
 
+> **Status:** the port is pretty much done and in a good playable state: the complete game has been played from start to end on a Switch. No new changes are planned, but contributions are very welcome if you know how to make it run even better.
+
 Nintendo Switch port of the Xbox 360 version of Singularity (2010), built by static recompilation with rexglue-sdk and drawn by a native deko3d renderer.
 
 The project is fully [vibecoded](https://share.google/jggfMaZ3mu2HW2Zd0).
@@ -11,8 +13,6 @@ The project is fully [vibecoded](https://share.google/jggfMaZ3mu2HW2Zd0).
 It reuses the Unreal Engine 3 on Switch stack of [gears2-nx](https://github.com/VasilkovND/gears2-nx) (Gears of War 2), adapted to Singularity. The PC version is [singularity-recomp](https://github.com/panalexeu/singularity-recomp). It needs your **legally owned and purchased** Xbox 360 copy: no game data or recompiled code is part of this repository.
 
 On a Switch Lite it runs at 960x540 with the CPU at 1785 MHz (the console's boost clock) and the GPU at 460.8 MHz: clean sound, heavy scenes playable, about 2 hours of battery. At the stock 1020 MHz CPU busy scenes drop below 20 fps and the sound crackles.
-
-The game has not yet been tested from start to finish.
 
 Known issues: entering a new area can still hitch for up to ~0.8 s (the game's own loading work), and the first lightning flash of a scene for ~0.3 s.
 
