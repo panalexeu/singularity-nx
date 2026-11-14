@@ -42,3 +42,14 @@ target_include_directories(ds_dksh PRIVATE "${DS_SDK}/include"
                            "${DS_TERCEROS}/xxHash")
 target_link_libraries(ds_dksh PRIVATE uamlib spirv-cross-glsl spirv-cross-core)
 set_target_properties(ds_dksh PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+
+# ds_info: each shader's runtime info (SPIR-V fingerprint, specialization mask, pixel shader interpolators) as the
+# console's cache/info_shaders.bin, so the console never converts a shader to GLSL just to learn them.
+add_executable(ds_info
+  ds_info.cpp
+  "${DS_SDK}/src/ui/deko3d/glsl.cpp"
+  "${DS_SDK}/src/ui/deko3d/cache_dksh.cpp"
+  "${DS_SHADERS}/ds_shader_library.cpp")
+target_include_directories(ds_info PRIVATE "${DS_SDK}/include" "${DS_TERCEROS}/xxHash" "${DS_SHADERS}")
+target_link_libraries(ds_info PRIVATE uamlib spirv-cross-glsl spirv-cross-core)
+set_target_properties(ds_info PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
