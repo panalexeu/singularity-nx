@@ -2439,8 +2439,32 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       REXLOG_INFO("[draws] trace {} of a light frame ({} draws in the previous one)", draw_traces_, frame_.draws);
     }
     if (first_swap_ == Clock::time_point{}) first_swap_ = now;
+    TironSiLoHubo(now);
     last_frame_draws_ = frame_.draws;
     frame_ = {};
+  }
+
+  // A frame over 100 ms (a visible freeze): one log line with what was read from the card for the first time during it
+  // (shaders' SPIR-V, compiled shaders) and how long that took, to tell a shader stall from anything else. At most 40.
+  void TironSiLoHubo(Clock::time_point now) {
+    const auto stats = singularity::shaders::Global().estadisticas();
+    uint64_t dksh = 0, dksh_ns = 0;
+    if (destinos_) destinos_->PrimerosUsos(dksh, dksh_ns);
+    if (tiron_anterior_ != Clock::time_point{} && frame_.draws >= 100 && tirones_ < 40) {
+      const double ms = std::chrono::duration<double, std::milli>(now - tiron_anterior_).count();
+      if (ms >= 100.0) {
+        ++tirones_;
+        REXLOG_INFO("[tiron] fotograma de {:.0f} ms ({} dibujos): {} shaders leidos de la tarjeta ({:.1f} ms), {} "
+                    "compilados leidos y preparados ({:.1f} ms)",
+                    ms, frame_.draws, stats.leidas - tiron_leidas_, double(stats.leidas_ns - tiron_leidas_ns_) / 1e6,
+                    dksh - tiron_dksh_, double(dksh_ns - tiron_dksh_ns_) / 1e6);
+      }
+    }
+    tiron_anterior_ = now;
+    tiron_leidas_ = stats.leidas;
+    tiron_leidas_ns_ = stats.leidas_ns;
+    tiron_dksh_ = dksh;
+    tiron_dksh_ns_ = dksh_ns;
   }
 
   void FrameTraceLine(const std::string& line) {
@@ -2759,6 +2783,10 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
   std::unordered_map<uint64_t, uint64_t> vs_generations_;
   uint64_t generacion_vs_ = 0, generacion_constantes_vs_ = 0, generacion_constantes_ps_ = 0;
   bool dof_merge_logged_ = false;  // singularity_dof_arma: said once that the merge works
+  // TironSiLoHubo: the previous frame's end and the first-use counters then.
+  Clock::time_point tiron_anterior_{};
+  uint64_t tiron_leidas_ = 0, tiron_leidas_ns_ = 0, tiron_dksh_ = 0, tiron_dksh_ns_ = 0;
+  uint32_t tirones_ = 0;
   uint64_t generacion_fetch_ = 0, generacion_encuadre_ = 0;
   uint64_t geometria_ = 0, enviados_ = 0, sin_vs_ = 0, sin_ps_ = 0;
   std::unordered_map<uint64_t, uint64_t> unknown_vs_skips_;          // microcode hash -> draws skipped

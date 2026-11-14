@@ -98,6 +98,7 @@ rexglue-sdk-nx patches (`patches/rexglue-sdk-nx/`):
 | `0012` | The achievement popup's dialog lived for the rest of the session, keeping the presenter painting from the interface thread | After a popup fades, frames are presented from the game thread again and the FPS counter is right |
 | `0013` | The emulator's own threads (GPU ring, XMA decoder, audio worker) outrank the game's and preempted its rendering thread on every core; they can now be kept on one (`singularity_nucleo_emulador`, core 2) | More CPU for the game's rendering thread in dense scenes |
 | `0015` | The audio threads follow a core setting of their own (`singularity_nucleo_audio`, any core): on the ring's core, with more priority, the XMA decoder left the ring no room | The GPU ring has core 2 to itself |
+| `0016` | A shader's first draw read its compiled code from the 577 MB cache file on the ring thread; scenes that suddenly need many new shaders (lightning) stalled. The variants used are now remembered (`cache/usados_dksh.bin`) and read ahead at the next start | Fewer first-use stalls from the second session on |
 | `0014` | Vertex buffers read by the shader itself were copied whole for every draw (12-18 MB a frame in dense scenes); now cached like vertex streams (`nfsmw_dk_manuales_en_cache`) | Uploads 0.3-1.4 MB a frame, GPU ring thread ~60 % → 22-35 % of a core; dense areas 23-25 → 27-30 fps |
 
 `overrides.toml` declares 277 function entry points the codegen analyzer misses (see singularity-recomp).

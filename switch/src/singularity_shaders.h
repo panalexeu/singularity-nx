@@ -42,6 +42,7 @@ struct Estadisticas {
   uint64_t objetos = 0;            // shaders created by the game (create hooks)
   uint64_t objetos_sin_entrada = 0;  // their container is not in the library
   uint64_t objetos_sin_direccion = 0;  // no pointer to the microcode found in the object
+  uint64_t leidas = 0, leidas_ns = 0;  // SPIR-V read from the card (first use or read ahead), and its time
 };
 
 class Biblioteca {
