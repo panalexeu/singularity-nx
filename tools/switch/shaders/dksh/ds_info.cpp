@@ -8,7 +8,7 @@
 // library at once, with the same functions (rex::deko3d), so not even a first session computes it.
 //
 // Usage: ds_info <singularity_shaders.dslib> <info_shaders.bin> [--hilos N]
-// Format (little-endian, the console's RenderDk::GuardarUsadosSiHaceFalta): u32 "INFO", u32 count, then per shader
+// Format (little-endian, the console's RenderDk::GuardarInfoSiHaceFalta): u32 "INFO", u32 count, then per shader
 // u64 container fingerprint, u64 SPIR-V fingerprint, u32 specialization mask, u32 interpolators, u8 interpolators valid.
 
 #include "ds_shader_library.h"

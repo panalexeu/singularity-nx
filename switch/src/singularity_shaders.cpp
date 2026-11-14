@@ -15,8 +15,6 @@
 #include <exception>
 #include <map>
 #include <mutex>
-#include <atomic>
-#include <thread>
 #include <unordered_map>
 
 #include <rex/cvar.h>
@@ -262,42 +260,6 @@ void VolcarDesconocido(bool vertices, uint64_t huella, std::span<const uint32_t>
   }
 }
 
-constexpr size_t kUsadosMax = 1500;
-constexpr uint32_t kMagiaUsados = 0x5053554B;  // "KUSP": the library entries used (Datos::usados)
-
-std::filesystem::path RutaUsados() { return rex::filesystem::GetExecutableFolder() / "cache" / "usados_spirv.bin"; }
-
-void GuardarUsados(const std::vector<uint32_t>& usados) {
-  std::error_code ec;
-  std::filesystem::create_directories(RutaUsados().parent_path(), ec);
-  const std::string temporal = RutaUsados().string() + ".tmp";
-  std::FILE* f = std::fopen(temporal.c_str(), "wb");
-  if (!f) return;
-  const uint32_t cabecera[2] = {kMagiaUsados, uint32_t(usados.size())};
-  bool ok = std::fwrite(cabecera, sizeof(cabecera), 1, f) == 1 &&
-            std::fwrite(usados.data(), 4, usados.size(), f) == usados.size();
-  ok = std::fclose(f) == 0 && ok;
-  if (!ok) return;
-  std::filesystem::rename(temporal, RutaUsados(), ec);
-  if (ec) {
-    std::filesystem::remove(RutaUsados(), ec);
-    std::filesystem::rename(temporal, RutaUsados(), ec);
-  }
-}
-
-std::vector<uint32_t> LeerUsados() {
-  std::vector<uint32_t> usados;
-  std::FILE* f = std::fopen(RutaUsados().string().c_str(), "rb");
-  if (!f) return usados;
-  uint32_t cabecera[2] = {};
-  if (std::fread(cabecera, sizeof(cabecera), 1, f) == 1 && cabecera[0] == kMagiaUsados && cabecera[1] <= kUsadosMax) {
-    usados.resize(cabecera[1]);
-    usados.resize(std::fread(usados.data(), 4, usados.size(), f));
-  }
-  std::fclose(f);
-  return usados;
-}
-
 uint64_t Huella(bool vertices, std::span<const uint32_t> microcodigo) {
   return XXH3_64bits(microcodigo.data(), microcodigo.size_bytes()) ^ (uint64_t(microcodigo.size()) << 1) ^
          uint64_t(vertices);
@@ -313,12 +275,6 @@ struct Biblioteca::Datos {
   std::vector<uint8_t> completa;
   bool por_demanda = false;
   uint64_t leidas = 0, leidas_ns = 0, fallidas = 0;
-  // The entries read (Completar), oldest first, at most kUsadosMax: saved in cache/usados_spirv.bin and read ahead on
-  // precarga at the next start, so a scene's first use of a shader (a lightning flash) does not wait for the card.
-  std::vector<uint32_t> usados;
-  uint32_t usados_sin_guardar = 0;
-  std::thread precarga;
-  std::atomic<bool> parar{false};
   std::unordered_map<const void*, uint32_t> por_shader;
   std::map<std::pair<bool, uint32_t>, std::vector<uint32_t>> candidatos;  // (vertices, words) -> entries
   bool cargada = false;
@@ -340,12 +296,7 @@ struct Biblioteca::Datos {
 };
 
 Biblioteca::Biblioteca() : datos_(std::make_unique<Datos>()) {}
-Biblioteca::~Biblioteca() {
-  if (datos_ && datos_->precarga.joinable()) {
-    datos_->parar.store(true, std::memory_order_relaxed);
-    datos_->precarga.join();
-  }
-}
+Biblioteca::~Biblioteca() = default;
 
 bool Biblioteca::cargada() const { return datos_->cargada; }
 
@@ -420,25 +371,6 @@ bool Biblioteca::Cargar(const std::filesystem::path& archivo) {
               d.entradas.size(), vs, d.entradas.size() - vs, ignorados,
               d.por_demanda ? "index only (SPIR-V read from the card when first used)" : "all in memory",
               double(fin - inicio) / 1e9);
-  // The shaders used in earlier sessions, read ahead on a thread of their own (Completar takes its own lock).
-  if (d.cargada && d.por_demanda) {
-    std::vector<uint32_t> lista = LeerUsados();
-    if (!lista.empty()) {
-      d.precarga = std::thread([this, lista = std::move(lista)] {
-        const auto t0 = std::chrono::steady_clock::now();
-        size_t n = 0;
-        for (const uint32_t i : lista) {
-          if (datos_->parar.load(std::memory_order_relaxed)) break;
-          if (i < datos_->entradas.size()) {
-            Completar(&datos_->entradas[i]);
-            ++n;
-          }
-        }
-        REXLOG_INFO("[shaders] {} shaders used before read ahead in {:.1f} s", n,
-                    std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
-      });
-    }
-  }
   return d.cargada;
 }
 
@@ -462,12 +394,6 @@ void Biblioteca::Completar(const EntradaShader* entrada) const {
   d.leidas_ns += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() -
                                                                                 inicio).count());
   ++d.leidas;
-  d.usados.push_back(uint32_t(i));
-  if (d.usados.size() > kUsadosMax) d.usados.erase(d.usados.begin());
-  if (++d.usados_sin_guardar >= 64) {
-    d.usados_sin_guardar = 0;
-    GuardarUsados(d.usados);
-  }
   if ((d.leidas & (d.leidas - 1)) == 0 && d.leidas >= 64) {
     REXLOG_INFO("[shaders] {} shaders read from the card so far ({:.2f} ms each on average)", d.leidas,
                 double(d.leidas_ns) / 1e6 / double(d.leidas));
