@@ -3,7 +3,8 @@
 #   1. ds_hlsl         containers -> HLSL (XenosRecomp's translator, --saltos-lineales)
 #   2. dxc, spirv-val  HLSL -> SPIR-V for deko3d, validated (Vulkan SDK)
 #   3. ds_empaquetar   containers + SPIR-V -> singularity_shaders.dslib
-#   4. ds_dksh         (optional, DKSH=1) the library -> shadercache_dksh.bin, so the console never runs uam
+#   4. ds_dksh         (optional, DKSH=1) the library -> shadercache_dksh.bin, so the console never runs uam,
+#      ds_info         and -> info_shaders.bin (each shader's input shapes, the console's cache/info_shaders.bin)
 #
 # Usage: shaders/build_library.sh <shaders_dump> <output folder>
 #   DXC, VAL     dxc and spirv-val (default: the ones on PATH)
@@ -94,4 +95,6 @@ if [ "${DKSH:-0}" = 1 ]; then
     > "$salida/dksh.log" 2>&1 ||
     echo "some variants failed: $salida/dksh.tsv"
   tail -3 "$salida/dksh.log"
+  # Each shader's runtime info (input shapes), so the console never converts a shader at its first draw.
+  "$salida/build_dksh/ds_info" "$salida/singularity_shaders.dslib" "$salida/info_shaders.bin"
 fi

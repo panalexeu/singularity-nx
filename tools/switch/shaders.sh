@@ -6,7 +6,8 @@
 #
 #   tools/switch/shaders.sh
 #
-# Output: out/shaders/singularity_shaders.dslib and out/shaders/shadercache_dksh.bin (copy both next to the NRO).
+# Output: out/shaders/singularity_shaders.dslib and out/shaders/shadercache_dksh.bin (copy both next to the NRO), and
+# out/shaders/info_shaders.bin (copy it to cache/ next to the NRO).
 # Needs dxc and spirv-val (DXC=..., VAL=... or on PATH), clang-20 / clang++-20 and tools/setup.sh done.
 # Takes hours: 21,766 shaders and ~152,000 DKSH variants, on every core.
 set -euo pipefail
@@ -32,4 +33,4 @@ echo "shaders: $(ls "$out/shaders_extracted" | grep -c '^vs_') VS, $(ls "$out/sh
 # The variants the console compiled at run time in earlier sessions (shaders/dksh_variants.py) go in the cache too.
 DKSH=1 VARIANTES="$root/tools/switch/shaders/dksh_variants.txt" \
   "$root/tools/switch/shaders/build_library.sh" "$out/shaders_extracted" "$out/shaders"
-ls -la "$out/shaders/singularity_shaders.dslib" "$out/shaders/shadercache_dksh.bin"
+ls -la "$out/shaders/singularity_shaders.dslib" "$out/shaders/shadercache_dksh.bin" "$out/shaders/info_shaders.bin"

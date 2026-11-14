@@ -14,6 +14,8 @@ On a Switch Lite it runs at 960x540 with the CPU at 1785 MHz (the console's boos
 
 The game has not yet been tested from start to finish.
 
+Known issues: entering a new area can still hitch for up to ~0.8 s (the game's own loading work), and the first lightning flash of a scene for ~0.3 s.
+
 ### Instructions
 
 Requirements: a Switch with Atmosphere running homebrew in title takeover mode (hold R while starting a game); Linux with git, Python 3, CMake 3.25+, Ninja, clang-20, Docker; `dxc` and `spirv-val` from the Vulkan SDK.
@@ -34,7 +36,7 @@ Requirements: a Switch with Atmosphere running homebrew in title takeover mode (
    tools/switch/codegen.sh
    ```
 
-4. Build the shaders once (21,767 shaders, ~152,000 DKSH variants, takes hours):
+4. Build the shaders once (21,767 shaders, ~152,000 DKSH variants and each shader's input shapes, takes hours):
 
    ```bash
    DXC=<path to dxc> VAL=<path to spirv-val> tools/switch/shaders.sh
@@ -55,7 +57,7 @@ Requirements: a Switch with Atmosphere running homebrew in title takeover mode (
 
    Copy `out/Coalesced_INT.bin` over `singularity-extract/RvGame/CookedXenon/Coalesced_INT.bin` on the SD card.
 
-7. Copy to `sdmc:/switch/singularity/`: `out/build/switch-native/singularity.nro`, `switch/singularity.toml`, `out/shaders/singularity_shaders.dslib`, `out/shaders/shadercache_dksh.bin` and your `singularity-extract/` folder. Launch the NRO from the homebrew menu in title takeover mode; logs go to `logs/` next to it.
+7. Copy to `sdmc:/switch/singularity/`: `out/build/switch-native/singularity.nro`, `switch/singularity.toml`, `out/shaders/singularity_shaders.dslib`, `out/shaders/shadercache_dksh.bin`, `out/shaders/info_shaders.bin` (into a `cache/` folder there) and your `singularity-extract/` folder. Launch the NRO from the homebrew menu in title takeover mode; logs go to `logs/` next to it.
 
 ### Changes
 
