@@ -32,8 +32,8 @@
 #define XXH_INLINE_ALL
 #include <xxhash.h>
 
-REXCVAR_DEFINE_BOOL(singularity_volcar_desconocidos, false, "Singularity",
-                    "Escribir el microcodigo de cada shader que no se identifica en shaders_unknown/ (hasta 2000)");
+REXCVAR_DEFINE_BOOL(singularity_volcar_desconocidos, true, "Singularity",
+                    "Escribir el microcodigo de cada shader que no se identifica en shaders_unknown/ (una vez cada uno, hasta 2000): asi se ve cuantos faltan en todo el juego sin pedir nada");
 
 REXCVAR_DEFINE_BOOL(singularity_shaders_por_demanda, true, "Singularity",
                     "La biblioteca de shaders se carga como indice (solo los contenedores) y el SPIR-V de cada shader "
