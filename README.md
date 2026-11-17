@@ -4,7 +4,7 @@
 
 ---
 
-> **Status:** the port is pretty much done and in a good playable state: the complete game has been played from start to end on a Switch. No new changes are planned, but contributions are very welcome if you know how to make it run even better.
+> **Status:** the port is pretty much done and in a good playable state: the complete game has been played from start to end on a Switch. Contributions are very welcome if you know how to make it run even better.
 
 Nintendo Switch port of the Xbox 360 version of Singularity (2010), built by static recompilation with rexglue-sdk and drawn by a native deko3d renderer.
 
