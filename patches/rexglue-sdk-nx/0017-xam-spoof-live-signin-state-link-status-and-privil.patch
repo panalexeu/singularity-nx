@@ -12,10 +12,48 @@ index ec37017..a2e219a 100644
  
    void set_kernel_state(KernelState* ks) { kernel_state_ = ks; }
 diff --git a/src/kernel/xam/xam_net.cpp b/src/kernel/xam/xam_net.cpp
-index 13eb414..d0d2626 100644
+index 13eb414..a997b2c 100644
 --- a/src/kernel/xam/xam_net.cpp
 +++ b/src/kernel/xam/xam_net.cpp
-@@ -506,7 +506,9 @@ struct XEthernetStatus {
+@@ -436,27 +436,19 @@ struct XnAddrStatus {
+ };
+ 
+ u32 NetDll_XNetGetTitleXnAddr_entry(u32 caller, ppc_ptr_t<XNADDR> addr_ptr) {
+-  // Just return a loopback address atm.
++  // Return loopback address with online flag set.
+   addr_ptr->ina.s_addr = htonl(INADDR_LOOPBACK);
+-  addr_ptr->inaOnline.s_addr = 0;
+-  addr_ptr->wPortOnline = 0;
+-
+-  // TODO(gibbed): A proper mac address.
+-  // RakNet's 360 version appears to depend on abEnet to create "random" 64-bit
+-  // numbers. A zero value will cause RakPeer::Startup to fail. This causes
+-  // 58411436 to crash on startup.
+-  // The 360-specific code is scrubbed from the RakNet repo, but there's still
+-  // traces of what it's doing which match the game code.
+-  // https://github.com/facebookarchive/RakNet/blob/master/Source/RakPeer.cpp#L382
+-  // https://github.com/facebookarchive/RakNet/blob/master/Source/RakPeer.cpp#L4527
+-  // https://github.com/facebookarchive/RakNet/blob/master/Source/RakPeer.cpp#L4467
+-  // "Mac address is a poor solution because you can't have multiple connections
+-  // from the same system"
+-  std::memset(addr_ptr->abEnet, 0xCC, 6);
++  addr_ptr->inaOnline.s_addr = htonl(INADDR_LOOPBACK);
++  addr_ptr->wPortOnline = htons(1000);
+ 
+-  std::memset(addr_ptr->abOnline, 0, 20);
++  std::memset(addr_ptr->abEnet, 0xCC, 6);
++  std::memset(addr_ptr->abOnline, 0xAA, 20);
+ 
+-  return XnAddrStatus::XNET_GET_XNADDR_STATIC;
++  return XnAddrStatus::XNET_GET_XNADDR_ETHERNET |
++         XnAddrStatus::XNET_GET_XNADDR_STATIC |
++         XnAddrStatus::XNET_GET_XNADDR_GATEWAY |
++         XnAddrStatus::XNET_GET_XNADDR_DNS |
++         XnAddrStatus::XNET_GET_XNADDR_ONLINE;
+ }
+ 
+ u32 NetDll_XNetGetDebugXnAddr_entry(u32 caller, ppc_ptr_t<XNADDR> addr_ptr) {
+@@ -506,7 +498,9 @@ struct XEthernetStatus {
  };
  
  u32 NetDll_XNetGetEthernetLinkStatus_entry(u32 caller) {
@@ -27,10 +65,18 @@ index 13eb414..d0d2626 100644
  
  u32 NetDll_XNetDnsLookup_entry(u32 caller, mapped_string host, u32 event_handle, mapped_u32 pdns) {
 diff --git a/src/kernel/xam/xam_user.cpp b/src/kernel/xam/xam_user.cpp
-index 8778066..9e61b63 100644
+index 8778066..bd46b6d 100644
 --- a/src/kernel/xam/xam_user.cpp
 +++ b/src/kernel/xam/xam_user.cpp
-@@ -382,8 +382,8 @@ u32 XamUserCheckPrivilege_entry(u32 user_index, u32 mask, mapped_u32 out_value)
+@@ -98,6 +98,7 @@ i32 XamUserGetSigninInfo_entry(u32 user_index, u32 flags, ppc_ptr_t<X_USER_SIGNI
+ 
+   const auto& user_profile = REX_KERNEL_STATE()->user_profile();
+   info->xuid = user_profile->xuid();
++  info->unk08 = 1;  // XUSER_INFO_FLAG_LIVE_ENABLED (0x00000001)
+   info->signin_state = user_profile->signin_state();
+   rex::string::copy_truncating(info->name, user_profile->name(), rex::countof(info->name));
+   return X_E_SUCCESS;
+@@ -382,8 +383,8 @@ u32 XamUserCheckPrivilege_entry(u32 user_index, u32 mask, mapped_u32 out_value)
      }
    }
  
