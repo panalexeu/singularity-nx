@@ -1,0 +1,43 @@
+diff --git a/include/rex/system/xam/user_profile.h b/include/rex/system/xam/user_profile.h
+index ec37017..a2e219a 100644
+--- a/include/rex/system/xam/user_profile.h
++++ b/include/rex/system/xam/user_profile.h
+@@ -218,7 +218,7 @@ class UserProfile {
+ 
+   uint64_t xuid() const { return xuid_; }
+   std::string name() const { return name_; }
+-  uint32_t signin_state() const { return 1; }
++  uint32_t signin_state() const { return 2; /* eXUserSigninState_SignedInToLive */ }
+   uint32_t type() const { return 1 | 2; /* local | online profile? */ }
+ 
+   void set_kernel_state(KernelState* ks) { kernel_state_ = ks; }
+diff --git a/src/kernel/xam/xam_net.cpp b/src/kernel/xam/xam_net.cpp
+index 13eb414..d0d2626 100644
+--- a/src/kernel/xam/xam_net.cpp
++++ b/src/kernel/xam/xam_net.cpp
+@@ -506,7 +506,9 @@ struct XEthernetStatus {
+ };
+ 
+ u32 NetDll_XNetGetEthernetLinkStatus_entry(u32 caller) {
+-  return 0;
++  return XEthernetStatus::XNET_ETHERNET_LINK_ACTIVE |
++         XEthernetStatus::XNET_ETHERNET_LINK_100MBPS |
++         XEthernetStatus::XNET_ETHERNET_LINK_FULL_DUPLEX;
+ }
+ 
+ u32 NetDll_XNetDnsLookup_entry(u32 caller, mapped_string host, u32 event_handle, mapped_u32 pdns) {
+diff --git a/src/kernel/xam/xam_user.cpp b/src/kernel/xam/xam_user.cpp
+index 8778066..9e61b63 100644
+--- a/src/kernel/xam/xam_user.cpp
++++ b/src/kernel/xam/xam_user.cpp
+@@ -382,8 +382,8 @@ u32 XamUserCheckPrivilege_entry(u32 user_index, u32 mask, mapped_u32 out_value)
+     }
+   }
+ 
+-  // If we deny everything, games should hopefully not try to do stuff.
+-  *out_value = 0;
++  // Grant privileges (multiplayer, user content, chat).
++  *out_value = 1;
+   return X_ERROR_SUCCESS;
+ }
+ 
