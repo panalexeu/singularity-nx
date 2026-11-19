@@ -2,6 +2,8 @@
 # Build the native (deko3d) singularity.nro in the singularity-switch Docker image.
 #
 #   tools/switch/build-native.sh [jobs] [extra ninja args...]   (jobs default 4: GCC needs ~2 GB each; use 2 on a 8 GB PC)
+#   PGO=generate tools/switch/build-native.sh   the instrumented NRO (out/build/switch-pgo-generate), writes pgo/ on the SD
+#   PGO=use tools/switch/build-native.sh        the optimised NRO (out/build/switch-pgo-use), reads pgo/ (pgo_merge.sh)
 #
 # Needs thirdparty/rexglue-sdk-nx set up by tools/setup.sh, and out/codegen-nx/ from tools/switch/codegen.sh.
 # Output: out/build/switch-native/singularity.nro. Copy it to the SD card with singularity_shaders.dslib and
@@ -12,6 +14,9 @@ sdk="${SINGULARITY_SDK_NX:-$( [ -d "$root/thirdparty/rexglue-sdk-nx/src" ] && ec
 jobs="${1:-4}"
 shift || true
 image=singularity-switch
+pgo="${PGO:-}"
+build_dir=switch-native
+[ -n "$pgo" ] && build_dir="switch-pgo-$pgo"
 name=singularity-switch-build
 
 # One build at a time: two parallel GCC builds ran a 16 GB PC out of memory.
@@ -30,12 +35,13 @@ docker run --rm --init --name "$name" -u "$(id -u):$(id -g)" -e HOME=/tmp \
   "$image" bash -c "
     set -e
     git config --global --add safe.directory '*'
-    cmake -S /src/switch -B /src/out/build/switch-native -G Ninja \
+    cmake -S /src/switch -B /src/out/build/$build_dir -G Ninja \
       -DCMAKE_TOOLCHAIN_FILE=/src/tools/switch/switch-devkitA64.cmake \
       -DCMAKE_BUILD_TYPE=Release \
       -DREXGLUE_SWITCH_DEKO3D=ON \
       -DREXSDK_DIR=/sdk \
-      -DSINGULARITY_CODEGEN_DIR=/src/out/codegen-nx
-    cmake --build /src/out/build/switch-native -j $jobs -- $*
+      -DSINGULARITY_CODEGEN_DIR=/src/out/codegen-nx \
+      -DSINGULARITY_PGO=$pgo -DSINGULARITY_PGO_DIR=/src/pgo
+    cmake --build /src/out/build/$build_dir -j $jobs -- $*
   "
-ls -la "$root/out/build/switch-native/"*.nro
+ls -la "$root/out/build/$build_dir/"*.nro

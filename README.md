@@ -48,6 +48,24 @@ Requirements: a Switch with Atmosphere running homebrew in title takeover mode (
    tools/switch/build-native.sh
    ```
 
+   **Profile-Guided Optimization (PGO):**
+   - **Step 1:** Build the instrumented binary:
+     ```bash
+     PGO=generate tools/switch/build-native.sh
+     ```
+     Copy `out/build/switch-pgo-generate/singularity.nro` to `sdmc:/switch/singularity/`.
+   - **Step 2:** Play the game through combat, exploration, and menus. The NRO automatically dumps branch execution counters to `sdmc:/switch/singularity/pgo/singularity_pgo_<N>.stream` every 2 minutes, when navigating to the HOME menu, and on exit.
+   - **Step 3:** Copy the `pgo/` folder from the SD card to the PC and merge the profile streams:
+     ```bash
+     tools/switch/pgo_merge.sh /path/to/pgo
+     ```
+     This runs `gcov-tool merge-stream` inside Docker and updates `.gcda` execution summaries with `tools/switch/pgo_summary.py`.
+   - **Step 4:** Build the final PGO-optimized binary:
+     ```bash
+     PGO=use tools/switch/build-native.sh
+     ```
+     Deploy `out/build/switch-pgo-use/singularity.nro` to your Switch.
+
 6. Optional, about +3-5 ms GPU relief in heavy combat: apply the recommended graphics profile (lowered shadow map resolution to 256, simplified PCF shadow filtering, and disabled distortion and dynamic decals) to the game's config:
 
    ```bash
@@ -71,7 +89,7 @@ Settings (`singularity.toml`):
 | `singularity_resolution = 540` | 960x540 instead of 1280x720, about 56% of the pixel work |
 | `singularity_patch_no_tiling = true` | Without it the bottom of the screen is red |
 | `singularity_sin_prepaso_z`, `singularity_sin_prepaso_enmascarado` | Without them the world turns red, and windows, rubbish and debris show a staircase of old frames |
-| `singularity_oclusion_anterior = true` | Answering pending occlusion queries with the previous frame's result immediately, eliminating CPU render stalls in heavy scenes |
+| `singularity_oclusion_anterior = false` | Answering pending occlusion queries with the previous frame's result immediately (off by default: with FASTARGS + PGO, CPU throughput is high enough that real queries resolve without stalling) |
 | `nfsmw_dk_compilar_variantes = false` | Never compiles a shader while playing (the general variant draws the same image); a runtime compile took a CPU core for 30+ s and the sound crackled |
 | `input_gyro = 1` | Gyroscopic motion aiming: 0 = off, 1 = active while aiming down sights with ZL, 2 = always on |
 | `input_gyro_sensitivity = 1.8` | Gyro aiming speed (0.1 to 5.0) |
@@ -85,6 +103,7 @@ Game patches (applied by `tools/switch/codegen.sh`):
 | 1 `patch_singularity.py` | `GUseTilingMode` (`0x83917A88`) set to 0 in `sub_82DAD680` | The scene is drawn once, not in two MSAA tiles (red bottom fixed) |
 | 3 `patch_scene_resolution.py` | `sub_82DBFA80`'s hard-coded 720 height and 1280 width cap become 540 / 960 (from gears2-nx 1.1.0) | The 540p mode |
 | Fast register entries (`patch_local_regs.py`, from deadpool-nx) | Functions pass parameters directly by value in host registers (`r3`–`r10`, `lr`, `f1`–`f13`) and return `r3` directly in host registers (`FASTARGS`) | Eliminates redundant `ctx` register spilling/reloading across 80,000+ functions; raises combat minimum FPS floor (~23.6 → 25.8+ fps) |
+| Profile-Guided Optimization (PGO, from deadpool-nx) | Instrumented runtime streams execution branch counters to `pgo/` every 2 minutes / HOME / exit; `PGO=use` guides function layout, inlining, branch prediction, and block placement | Boosts CPU execution speed by ~5-10% in heavy combat scenes |
 | ARM fixes, CPU passes | From the Gears of War 2 PC port and gears2-nx | Correct on ARM's memory model, 25-30% less CPU per frame |
 | Clear emulation (`switch/src/singularity_gpu.cpp`) | Direct3D's clear rectangle takes its color from its vertices; the color written through the depth path is computed without float overflow | Projector slides in their real colors (they were red) |
 | Perf hooks (`switch/src/singularity_perf_hooks.cpp`, from gears2-nx) | Direct3D's GPU and occlusion-query waits sleep instead of spinning; memcpy, memset and the audio mixer's state-variable filter (`sub_828EDF78`) run as native code | The spins took a core from the audio thread (crackling); the filter was 26% of the audio thread |

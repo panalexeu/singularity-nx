@@ -23,7 +23,7 @@ singularity_oclusion_real = true
 
 # When waiting for a query that the GPU hasn't finished yet, answer with the previous frame's result
 # immediately instead of letting the CPU render thread sleep in 100 us polling loops.
-singularity_oclusion_anterior = true
+singularity_oclusion_anterior = false
 
 # Skip the depth prepass (gears2-nx's rule): drawn, the base pass's depth misses it by a rounding difference between
 # two separately compiled vertex shaders, and the world turns red.

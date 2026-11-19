@@ -132,7 +132,7 @@ REXCVAR_DECLARE(bool, nfsmw_dk_borrado_z_aplazado);
 // for a query, so OcclusionPoll answers the ones still being counted instead of letting it wait for the GPU.
 std::atomic<bool> g_singularity_query_waited{false};
 
-REXCVAR_DEFINE_BOOL(singularity_oclusion_anterior, true, "Singularity",
+REXCVAR_DEFINE_BOOL(singularity_oclusion_anterior, false, "Singularity",
                     "When the game waits for an occlusion result the GPU has not counted yet, answer with that query's "
                     "result from the previous frame (each object reuses its query every frame) instead of letting the "
                     "render thread spin. Culling stays on; an object may appear one frame late");

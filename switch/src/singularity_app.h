@@ -36,6 +36,7 @@
 
 #include "singularity_cpu.h"
 #include "singularity_gpu.h"
+#include "singularity_pgo.h"
 
 REXCVAR_DECLARE(int32_t, singularity_resolution);
 
@@ -91,7 +92,16 @@ class SingularityApp : public rex::ReXApp {
     if (!folder.empty()) paths.game_data_root = folder / "singularity-extract";
   }
 
-  void OnPostInitLogging() override { singularity::cpu::InformarSistema(); }
+  void OnPostInitLogging() override {
+    singularity::cpu::InformarSistema();
+    singularity::pgo::Start();  // PGO=generate builds only: the profile counts to pgo/ (singularity_pgo.cpp)
+  }
+
+  // The instrumented build's counts at HOME (the game is often closed from there, without an exit) and at exit.
+  void OnWindowFocusChanged(bool focused) override {
+    if (!focused) singularity::pgo::DumpNow();
+  }
+  void OnShutdown() override { singularity::pgo::Stop(); }
 
   void OnLoadXexImage(std::string& xex_image) override {
     std::error_code ec;

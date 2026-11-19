@@ -26,6 +26,7 @@ add_executable(singularity
     src/singularity_guards.cpp
     src/singularity_game_patches.cpp
     src/singularity_perf_hooks.cpp
+    src/singularity_pgo.cpp
     ${SINGULARITY_SHADER_TOOLS}/ds_shader_library.cpp
 )
 singularity_setup_target(singularity)
@@ -40,6 +41,38 @@ rexglue_switch_add_deko3d(singularity)
 target_compile_definitions(singularity PRIVATE SINGULARITY_DEKO3D=1)
 target_link_libraries(singularity PRIVATE mspack)
 target_include_directories(singularity PRIVATE ${SINGULARITY_SHADER_TOOLS} ${REXSDK_DIR}/thirdparty/xxHash)
+
+# Profile-guided optimisation (docs: README "Profile-guided build"). PGO=generate: an instrumented NRO that streams its
+# branch counts to pgo/ on the SD card (src/singularity_pgo.cpp); tools/switch/pgo_merge.sh turns them into .gcda files in
+# SINGULARITY_PGO_DIR; PGO=use builds with them. The recompiled game, this app and the SDK runtime (renderer, GPU ring,
+# kernel, audio glue) are profiled; -fprofile-prefix-path makes the profile's names independent of the build folder.
+set(SINGULARITY_PGO "" CACHE STRING "Profile-guided optimisation: empty, generate or use")
+set(SINGULARITY_PGO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../pgo" CACHE PATH "Folder of the PGO profile (.gcda files)")
+if(SINGULARITY_PGO)
+    get_filename_component(_singularity_pgo_dir "${SINGULARITY_PGO_DIR}" ABSOLUTE)
+    if(SINGULARITY_PGO STREQUAL "generate")
+        set(_singularity_pgo "-fprofile-generate=${_singularity_pgo_dir}" "-fprofile-prefix-path=${CMAKE_BINARY_DIR}"
+                          -fno-profile-values -fprofile-update=single -fprofile-info-section=gcov_info)
+        target_compile_definitions(singularity PRIVATE SINGULARITY_PGO_GENERATE=1)
+        target_link_options(singularity PRIVATE "-fprofile-generate=${_singularity_pgo_dir}")
+    elseif(SINGULARITY_PGO STREQUAL "use")
+        file(GLOB _singularity_pgo_gcda "${_singularity_pgo_dir}/*.gcda")
+        if(NOT _singularity_pgo_gcda)
+            message(FATAL_ERROR "SINGULARITY_PGO=use: no profile in ${_singularity_pgo_dir} (tools/switch/pgo_merge.sh)")
+        endif()
+        set(_singularity_pgo "-fprofile-use=${_singularity_pgo_dir}" "-fprofile-prefix-path=${CMAKE_BINARY_DIR}"
+                          -fprofile-correction -fno-profile-values -fprofile-partial-training -Wno-missing-profile
+                          -Wno-coverage-mismatch)
+    else()
+        message(FATAL_ERROR "SINGULARITY_PGO must be empty, generate or use (got ${SINGULARITY_PGO})")
+    endif()
+    foreach(_t singularity singularity_recomp rexruntime rexcore rexaudio rexfilesystem libavcodec libavutil)
+        if(TARGET ${_t})
+            target_compile_options(${_t} PRIVATE "$<$<COMPILE_LANGUAGE:C,CXX>:${_singularity_pgo}>")
+        endif()
+    endforeach()
+    message(STATUS "singularity: PGO ${SINGULARITY_PGO} (${_singularity_pgo_dir})")
+endif()
 
 set(SINGULARITY_VERSION "0.3")
 execute_process(COMMAND git rev-parse --short=10 HEAD WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"

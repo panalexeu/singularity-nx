@@ -14,3 +14,5 @@ LOG.md
 # Game files (user-supplied, never commit)
 singularity-extract
 __pycache__/
+# PGO profile (counts from play sessions of the recompiled game)
+pgo/
