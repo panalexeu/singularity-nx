@@ -11,8 +11,8 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 out="$root/out/codegen-nx"
 gen="$out/generated/default"
-sdk="${SINGULARITY_SDK_NX:-$root/thirdparty/rexglue-sdk-nx}"
-rexglue="${REXGLUE:-$(find "$root/thirdparty/rexglue-sdk/out" -name rexglue -type f -perm -u+x 2>/dev/null | head -1)}"
+sdk="${SINGULARITY_SDK_NX:-$( [ -d "$root/thirdparty/rexglue-sdk-nx/src" ] && echo "$root/thirdparty/rexglue-sdk-nx" || echo "$root/../rexglue-sdk-nx" )}"
+rexglue="${REXGLUE:-$(which rexglue 2>/dev/null || find "$root/thirdparty/rexglue-sdk/out" -name rexglue -type f -perm -u+x 2>/dev/null | head -1)}"
 [ -x "$rexglue" ] || { echo "No v0.10.0 rexglue (set REXGLUE)" >&2; exit 1; }
 [ -f "$root/singularity-extract/default.xex" ] || { echo "No singularity-extract/default.xex" >&2; exit 1; }
 
@@ -32,9 +32,11 @@ includes = ["../../overrides.toml"]
 EOF
 
 echo "== codegen ($("$rexglue" --version 2>/dev/null | head -1 || echo rexglue))"
-(cd "$out" && "$rexglue" codegen singularity_manifest.toml) > "$out/codegen.log" 2>&1 || {
+(cd "$out" && "$rexglue" codegen --ignore-stamp singularity_manifest.toml) > "$out/codegen.log" 2>&1 || {
   echo "codegen failed, see $out/codegen.log" >&2; exit 1; }
 tail -2 "$out/codegen.log"
+# CODEGEN_ONLY=1: stop here, with the generated code untouched (to compare it with another game's).
+[ "${CODEGEN_ONLY:-0}" = 1 ] && exit 0
 
 fixes="$root/tools/switch/codegen"
 echo "== unresolved branches and jump tables"
@@ -66,11 +68,13 @@ echo "== guest stack accesses without volatile"
 (cd "$out" && python3 "$fixes/patch_stack_access.py" generated/default/*.cpp) | tail -1
 echo "== inlinable calls"
 (cd "$out" && python3 "$fixes/patch_inline_calls.py" "${srcs[@]}" -- generated/default/singularity_recomp.*.cpp) | tail -1 | cut -c1-200
+# The tree before the register pass, kept so the pass can be re-run alone (tools/switch/localregs.sh).
+rm -rf "$out/prelocal" && cp -a "$gen" "$out/prelocal"
 if [ "${LOCALREGS:-1}" = 1 ]; then
   echo "== guest registers in host locals"
   (cd "$out" && PLR_MAP="$out/patch_local_regs.check.map" python3 "$fixes/patch_local_regs.py" \
     generated/default/singularity_inline_helpers.h "${srcs[@]}" -- generated/default/singularity_recomp.*.cpp) \
     > "$out/patch_local_regs.log" 2>&1 || { tail -20 "$out/patch_local_regs.log"; exit 1; }
-  tail -1 "$out/patch_local_regs.log" | cut -c1-200
+  tail -2 "$out/patch_local_regs.log" | cut -c1-300
 fi
 echo "done: $gen"

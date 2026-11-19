@@ -77,6 +77,16 @@ GUARD_REF = mask(["r1", "r13", "lr", "r3"])  # REX_FUNC_PROLOGUE's stack guard (
 GUARD_MOD = mask(["r3"])                     # ... and answers 0
 TRAP_REF = mask(["r3", "r4"])
 CHECK = os.environ.get("PLR_CHECK") == "1"
+# Arguments in registers (off by default, FASTARGS=1 turns it on; never with PLR_CHECK, whose poison works on ctx): every function the
+# pass rewrites, that no hook replaces, gets a fast entry __fast_sub_X(ctx, base, <arguments>) whose arguments are the
+# argument registers it reads before writing (REF: r3-r10, at most 6, as AArch64 has 8 argument registers and two hold
+# ctx and base; f1-f13, at most 8) and whose result is r3 when it may change it (MOD). sub_X stays as a wrapper with
+# the old ABI (indirect calls, hooks, native code, tail calls). A direct call that is a statement of its own passes
+# its locals by value and takes r3 back, instead of storing them to ctx and loading r3 from it: those stores and loads
+# were about a fifth of the main thread's samples in the generated code (Singularity, fights).
+FASTARGS = os.environ.get("FASTARGS", "1") == "1" and not CHECK
+FAST_R = [f"r{i}" for i in range(3, 11)]
+FAST_F = [f"f{i}" for i in range(1, 14)]
 # Imports that look at the whole register state (a context for a crash report or an exception): this function's
 # registers are all written back before them (the callers' non-volatiles may be stale there).
 CTX_IMPORTS = {"RtlCaptureContext", "RtlRaiseException", "RtlUnwind", "KeBugCheck", "KeBugCheckEx"}
@@ -793,11 +803,36 @@ def ctype(r):
     return "PPCRegister"
 
 
-def rewrite(f, ref, mod, liveout, hooked, defined, sites=None):
-    body, n = f.body, f.n
-    if not f.used:
+def fast_target(target, fast):
+    if not target:
         return None
-    names = [r for r in NAMES if f.used >> BIT[r] & 1]
+    t = target[len("__imp__"):] if target.startswith("__imp__") else target
+    return t if t in fast else None
+
+
+def fast_field(x):
+    return "" if x == "lr" else (".f64" if x[0] == "f" else ".u64")
+
+
+def fast_arg(x, names):
+    return (f"L_{x}" if x in names else f"ctx.{x}") + fast_field(x)
+
+
+def fast_signature(name, params, ret):
+    args = "".join(f", {'double' if x[0] == 'f' else 'uint64_t'} p_{x}" for x in params)
+    return f"{'uint64_t' if ret else 'void'} __fast_{name}(PPCContext& __restrict ctx, uint8_t* base{args})"
+
+
+def rewrite(f, ref, mod, liveout, hooked, defined, sites=None, fast=None):
+    body, n = f.body, f.n
+    fast = fast or {}
+    me = fast.get(f.name)  # (params, ret) when this function gets a fast entry
+    pmask = mask(me[0]) if me else 0
+    rmask = mask(["r3"]) if me and me[1] else 0
+    if not f.used and not me:
+        return None
+    used = f.used | pmask | rmask
+    names = [r for r in NAMES if used >> BIT[r] & 1]
 
     def site(kind, target):
         return call_ref_mod(kind, target, ref, mod, hooked, defined)
@@ -847,7 +882,16 @@ def rewrite(f, ref, mod, liveout, hooked, defined, sites=None):
     din = [0] * (n + 1)
     seen = [False] * (n + 1)
     seen[f.start] = True
+    din[f.start] = pmask  # a parameter is newer than its ctx copy
     work = [f.start]
+
+    def fast_site(i):
+        """(params, ret) when line i's call goes through the callee's fast entry."""
+        if not (f.calls[i] and f.plain[i]) or f.tail[i]:
+            return None
+        kind, target = f.calls[i][0]
+        t = fast_target(target, fast) if kind == "d" else None
+        return fast[t] if t else None
     while work:
         i = work.pop()
         if i >= n:
@@ -856,8 +900,16 @@ def rewrite(f, ref, mod, liveout, hooked, defined, sites=None):
         if f.calls[i] and f.plain[i]:
             kind, target = f.calls[i][0]
             r, m = site(kind, target)
+            fs = fast_site(i)
             if f.tail[i]:
                 cur = 0
+            elif fs:
+                # The arguments are passed, not written back: they stay as dirty as they were, unless read back
+                # (MOD). r3 comes back as the result, into the local: newer than ctx.
+                pm = mask(fs[0])
+                cur &= ~(((r | m) & ~pm) | (m & pm))
+                if fs[1]:
+                    cur |= mask(["r3"])
             else:
                 cur &= ~(r | m)
         for s in f.succ[i]:
@@ -868,7 +920,16 @@ def rewrite(f, ref, mod, liveout, hooked, defined, sites=None):
                 work.append(s)
 
     out = body[:f.start]
-    out.extend(f"\t{ctype(r)} L_{r} = ctx.{r};" for r in names)
+    if me:
+        out = [("\tREX_FUNC_PROLOGUE_RET(" + ("ctx.r3.u64" if me[1] else "") + ");")
+               if l.strip() == "REX_FUNC_PROLOGUE();" else l for l in out]
+    for r in names:
+        if pmask >> BIT[r] & 1 and r == "lr":
+            out.append(f"\tuint64_t L_lr = p_lr;")
+        elif pmask >> BIT[r] & 1:
+            out.append(f"\t{ctype(r)} L_{r}; L_{r}{fast_field(r)} = p_{r};")
+        else:
+            out.append(f"\t{ctype(r)} L_{r} = ctx.{r};")
     sub = lambda m: "L_" + m.group(1)
     for i in range(f.start, n):
         line = body[i]
@@ -888,19 +949,35 @@ def rewrite(f, ref, mod, liveout, hooked, defined, sites=None):
         if f.calls[i]:
             tail = f.tail[i]
 
+            fsi = fast_site(i)
+
             def wrap(kind, target, text):
                 r, m = site(kind, target)
+                t = fast_target(target, fast) if kind == "d" else None
+                if fsi and t:
+                    params, ret = fast[t]
+                    pm = mask(params)
+                    fm = here & (r | (m & live_out[i])) & ~pm
+                    call = f"__fast_{t}(ctx, base" + "".join(", " + fast_arg(x, names) for x in params) + ")"
+                    if ret:
+                        call = ("L_r3.u64 = " if "r3" in names else "ctx.r3.u64 = ") + call
+                    # Only what is read before being written again (live after the call): a dead register's local
+                    # may stay stale, it is written before any read and is not dirty, so nothing flushes it.
+                    back = m & used & live_out[i] & ~(mask(["r3"]) if ret else 0)
+                    return "{ " + flush(fm, names) + call + ";" + reload(back, names) + " }"
                 if kind == "t":
                     return "{ " + flush(here, names) + text + " }"
                 if kind == "s" or (target or "").replace("__imp__", "", 1) in CTX_IMPORTS:
-                    return "{ " + flush(here, names) + text + reload(m & f.used, names) + " }"
+                    return "{ " + flush(here, names) + text + reload(m & used, names) + " }"
                 if tail:
                     # What the callee reads, and what this function's return has to leave in ctx (the return
                     # after the call writes nothing back: everything it changes is read back here).
-                    return "{ " + flush(here & (r | at_return), names) + text + reload(m & f.used, names) + " }"
+                    return "{ " + flush(here & (r | at_return), names) + text + reload(m & used, names) + " }"
                 fm = here & (r | (m & live_out[i]))
                 if not CHECK:
-                    return "{ " + flush(fm, names) + text + reload(m & f.used, names) + " }"
+                    # FASTARGS: the dead registers are not read back either (see the fast call above).
+                    back = m & used & (live_out[i] if FASTARGS and kind == "d" else ALL)
+                    return "{ " + flush(fm, names) + text + reload(back, names) + " }"
                 # PLR_CHECK=1: the registers not read back must come back unchanged (MOD), and the dirty ones not
                 # written back get a poison value the callee must not use (REF).
                 # Each site has a number (sites[0], the file's base, plus a count): the poison's low word is
@@ -923,7 +1000,7 @@ def rewrite(f, ref, mod, liveout, hooked, defined, sites=None):
                 post = (f" if (__builtin_expect({cond}, 0)) singularity_regcheck_fail(__func__, \"{target or 'bctrl'}\", "
                         f"0x{sid:X}, \"{' '.join(keep)}\", chk_, &ctx);" if keep else "")
                 unpoison = "".join(f" ctx.{x}.u64 = pz_[{k}];" for k, x in enumerate(poison))
-                return "{ " + flush(fm, names) + pre + text + post + unpoison + reload(m & f.used, names) + " }"
+                return "{ " + flush(fm, names) + pre + text + post + unpoison + reload(m & used, names) + " }"
 
             spans = find_indirect(new)
             kinds = [k for k, _ in f.calls[i] if k in ("i", "s")]
@@ -932,34 +1009,59 @@ def rewrite(f, ref, mod, liveout, hooked, defined, sites=None):
             new = CALL.sub(lambda m: wrap("d", m.group(1), m.group(0)), new)
             new = TRAP.sub(lambda m: wrap("t", None, m.group(0)), new)
         if f.returns[i]:
-            fm = here & at_return
-            if fm:
-                new = new.replace("return;", "{ " + flush(fm, names) + "return; }")
+            fm = here & at_return & ~rmask
+            if fm or rmask:
+                new = new.replace("return;", "{ " + flush(fm, names) + ("return L_r3.u64; }" if rmask else
+                                                                          "return; }"))
         out.append(new + comment)
-    if seen[n] and din[n] & at_return:
-        out.append("\t" + flush(din[n] & at_return, names).rstrip())
+    if seen[n] and din[n] & at_return & ~rmask:
+        out.append("\t" + flush(din[n] & at_return & ~rmask, names).rstrip())
+    if rmask:
+        out.append("\treturn L_r3.u64;")
     return out
 
 
 def phase3(args):
-    path, helpers, ref, mod, liveout, hooked, defined = args
+    path, helpers, ref, mod, liveout, hooked, defined, fast = args
     lines, funcs = parse_file(path, helpers)
     m = re.search(r"singularity_recomp\.(\d+)\.cpp$", path)
     sites = {"base": (int(m.group(1)) if m else 255) << 16, "list": []}
     out = []
     last = 0
     done = skipped = 0
+    called = set()  # the fast entries this file calls: declared at its top
     for name, a, b, f in funcs:
-        out.extend(lines[last:a + 1])
+        out.extend(lines[last:a])
         new = None
         if f is not None and f.ok:
-            new = rewrite(f, ref, mod, liveout, hooked, defined, sites)
+            new = rewrite(f, ref, mod, liveout, hooked, defined, sites, fast)
             done += 1
+            for i in range(f.n):
+                if f.calls[i] and f.plain[i] and not f.tail[i] and f.calls[i][0][0] == "d":
+                    t = fast_target(f.calls[i][0][1], fast)
+                    if t:
+                        called.add(t)
         elif f is not None:
             skipped += 1
-        out.extend(new if new is not None else lines[a + 1:b])
+        if name in fast and new is not None:
+            params, ret = fast[name]
+            # The body as the fast entry, then sub_X with the old ABI around it.
+            out.append(fast_signature(name, params, ret) + " {")
+            out.extend(new)
+            out.append("}")
+            out.append("")
+            call = f"__fast_{name}(ctx, base" + "".join(f", ctx.{x}{fast_field(x)}" for x in params) + ")"
+            out.append(lines[a])
+            out.append("\t" + ("ctx.r3.u64 = " if ret else "") + call + ";")
+        else:
+            out.append(lines[a])
+            out.extend(new if new is not None else lines[a + 1:b])
         last = b
     out.extend(lines[last:])
+    if called:
+        decl = [fast_signature(t, *fast[t]) + ";" for t in sorted(called)]
+        k = max(i for i, l in enumerate(out[:50]) if l.startswith("#include")) + 1
+        out[k:k] = ["// Fast entries (patch_local_regs.py, arguments in registers)"] + decl
     open(path, "w", encoding="utf-8", errors="surrogateescape").write("\n".join(out))
     return done, skipped, sites["list"]
 
@@ -997,7 +1099,25 @@ def main(argv):
                         open(os.environ["PLR_DUMP"], "wb"))
         done = skipped = 0
         site_list = []
-        for d, s, sl in ex.map(phase3, [(p, helpers, ref, mod, liveout, hooked, defined) for p in files]):
+        fast = {}
+        if FASTARGS:
+            for name, sm in summ.items():
+                if sm is None or not name.startswith("sub_") or name in hooked:
+                    continue
+                # Only what the function itself reads before writing it (liveness without its callees' reads):
+                # a register it only hands on stays in ctx, where the caller already has it (REF, transitive, is
+                # r3-r10 and f1-f13 almost everywhere, through any indirect call).
+                live, _ = liveness(sm, ref, mod, hooked, defined, 0, False)
+                own = live[sm["start"]] if sm["start"] < len(sm["nodes"]) else 0
+                own &= ref[name]
+                gp = [x for x in FAST_R if own >> BIT[x] & 1][:6]
+                if len(gp) < 6 and own >> BIT["lr"] & 1:
+                    gp.append("lr")  # the return address, instead of a store to ctx.lr before every call
+                params = gp + [x for x in FAST_F if own >> BIT[x] & 1][:8]
+                ret = bool(mod[name] >> BIT["r3"] & 1)
+                if params or ret:
+                    fast[name] = (params, ret)
+        for d, s, sl in ex.map(phase3, [(p, helpers, ref, mod, liveout, hooked, defined, fast) for p in files]):
             done += d
             skipped += s
             site_list.extend(sl)
@@ -1011,7 +1131,8 @@ def main(argv):
             for k, v in sorted(odd.items()):
                 fo.write(k + " " + " ".join(r for r in NAMES if v >> BIT[r] & 1) + "\n")
     print(f"patch_local_regs: {done} functions with registers in locals, {skipped} left as they were; "
-          f"{nv_ref} functions read a caller's non-volatile register")
+          f"{nv_ref} functions read a caller's non-volatile register; {len(fast)} fast entries (arguments in "
+          f"registers{'' if FASTARGS else ': off'})")
     return 0
 
 

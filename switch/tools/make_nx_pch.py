@@ -167,6 +167,28 @@ if "REX_FUNC_PROLOGUE_LEAF" not in text:
 #endif
 """
 
+# 5c. The prologue of the fast entries tools/switch/codegen/patch_local_regs.py makes (arguments in registers): the same
+#     stack guard, but a fast entry that returns r3 answers it as a value (the cut sets ctx.r3 to 0).
+if "REX_FUNC_PROLOGUE_RET" not in text:
+    text = text.rstrip() + """
+
+// Switch (make_nx_pch.py, point 5c): REX_FUNC_PROLOGUE() for a fast entry; REX_FUNC_PROLOGUE_RET(value) returns value
+// (empty for a fast entry without a result) when the guard cuts the call.
+#if defined(__GNUC__)
+#define REX_FUNC_PROLOGUE_RET(...)                                     \\
+  do {                                                                 \\
+    if (((size_t)base & 0x1F) != 0)                                    \\
+      __builtin_unreachable();                                         \\
+    if (__builtin_expect(singularity_stack_near_limit(ctx, base), 0)) {   \\
+      singularity_stack_cut(ctx, base, __func__);                         \\
+      return __VA_ARGS__;                                              \\
+    }                                                                  \\
+  } while (0)
+#else
+#define REX_FUNC_PROLOGUE_RET(...) ((void)0)
+#endif
+"""
+
 # 6. The guest stack accesses tools/patch_stack_access.py marks: plain (memcpy, alias-safe) instead of volatile, so the
 #    compiler may keep a spilled local in a register or pair the helpers' stores. The stack belongs to one thread.
 if "REX_SLOAD_U32" not in text:

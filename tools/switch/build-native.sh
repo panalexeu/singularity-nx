@@ -8,7 +8,7 @@
 # shadercache_dksh.bin (tools/switch/shaders/build_library.sh) next to it.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
-sdk="${SINGULARITY_SDK_NX:-$root/thirdparty/rexglue-sdk-nx}"
+sdk="${SINGULARITY_SDK_NX:-$( [ -d "$root/thirdparty/rexglue-sdk-nx/src" ] && echo "$root/thirdparty/rexglue-sdk-nx" || echo "$root/../rexglue-sdk-nx" )}"
 jobs="${1:-4}"
 shift || true
 image=singularity-switch

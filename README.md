@@ -84,6 +84,7 @@ Game patches (applied by `tools/switch/codegen.sh`):
 |---|---|---|
 | 1 `patch_singularity.py` | `GUseTilingMode` (`0x83917A88`) set to 0 in `sub_82DAD680` | The scene is drawn once, not in two MSAA tiles (red bottom fixed) |
 | 3 `patch_scene_resolution.py` | `sub_82DBFA80`'s hard-coded 720 height and 1280 width cap become 540 / 960 (from gears2-nx 1.1.0) | The 540p mode |
+| Fast register entries (`patch_local_regs.py`, from deadpool-nx) | Functions pass parameters directly by value in host registers (`r3`–`r10`, `lr`, `f1`–`f13`) and return `r3` directly in host registers (`FASTARGS`) | Eliminates redundant `ctx` register spilling/reloading across 80,000+ functions; raises combat minimum FPS floor (~23.6 → 25.8+ fps) |
 | ARM fixes, CPU passes | From the Gears of War 2 PC port and gears2-nx | Correct on ARM's memory model, 25-30% less CPU per frame |
 | Clear emulation (`switch/src/singularity_gpu.cpp`) | Direct3D's clear rectangle takes its color from its vertices; the color written through the depth path is computed without float overflow | Projector slides in their real colors (they were red) |
 | Perf hooks (`switch/src/singularity_perf_hooks.cpp`, from gears2-nx) | Direct3D's GPU and occlusion-query waits sleep instead of spinning; memcpy, memset and the audio mixer's state-variable filter (`sub_828EDF78`) run as native code | The spins took a core from the audio thread (crackling); the filter was 26% of the audio thread |
