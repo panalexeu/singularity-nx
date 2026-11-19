@@ -93,7 +93,7 @@ Settings (`singularity.toml`):
 | `nfsmw_dk_compilar_variantes = false` | Never compiles a shader while playing (the general variant draws the same image); a runtime compile took a CPU core for 30+ s and the sound crackled |
 | `input_gyro = 1` | Gyroscopic motion aiming: 0 = off, 1 = active while aiming down sights with ZL, 2 = always on |
 | `input_gyro_sensitivity = 1.8` | Gyro aiming speed (0.1 to 5.0) |
-| `input_gyro_deadzone = 0.5` | Deadzone in degrees/second to filter hand tremors |
+| `input_gyro_deadzone = 0.3` | Deadzone in degrees/second to filter hand tremors |
 | `input_gyro_min_stick = 11000` | Starting stick offset past deadzone to bypass UE3's internal stick curve |
 
 Game patches (applied by `tools/switch/codegen.sh`):

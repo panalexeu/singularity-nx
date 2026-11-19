@@ -50,7 +50,7 @@ input_gyro = 1
 # Sensitivity: try 1.8 - 2.2 for responsive fine aiming
 input_gyro_sensitivity = 1.8
 # Deadzone in degrees/sec (lower = responds to subtle wrist motion immediately)
-input_gyro_deadzone = 0.5
+input_gyro_deadzone = 0.3
 # Starting stick offset past the deadzone to overcome UE3 internal stick deadzones
 input_gyro_min_stick = 11000
 input_gyro_invert_x = false
