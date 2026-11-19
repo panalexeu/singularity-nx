@@ -64,6 +64,18 @@ class Biblioteca {
   // microcode in host byte order. nullptr if no step identifies it. Ring thread.
   const rex::x360::EntradaShader* Identificar(bool vertices, uint32_t fisica, std::span<const uint32_t> microcodigo);
 
+  // Preload a specific shader by its library index
+  void PrecargarShader(uint32_t numero);
+
+  // Preload all shaders listed in a text file (one number per line or whitespace-separated)
+  void PrecargarLista(const std::filesystem::path& ruta);
+
+  // Pointers to the preloaded EntradaShader entries
+  const std::vector<const rex::x360::EntradaShader*>& EntradasPrecargadas() const;
+
+  // Shaders read from the SD card since last call
+  std::vector<uint32_t> TomarLeidasRecientes();
+
   Estadisticas estadisticas() const;
 
  private:

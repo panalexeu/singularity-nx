@@ -18,9 +18,12 @@ singularity_resolution = 540
 # variant (the same image). A runtime compile took a game core for 30+ s and the sound crackled.
 nfsmw_dk_compilar_variantes = false
 
-# Occlusion: when the game waits for a visibility result the GPU has not counted yet, do not answer with the previous
-# frame's result (true): objects showed up a frame late or blinked at edges. The wait sleeps instead of spinning anyway.
-singularity_oclusion_anterior = false
+# Real occlusion queries active (keeps hidden objects culled so draw calls and GPU work stay lower).
+singularity_oclusion_real = true
+
+# When waiting for a query that the GPU hasn't finished yet, answer with the previous frame's result
+# immediately instead of letting the CPU render thread sleep in 100 us polling loops.
+singularity_oclusion_anterior = true
 
 # Skip the depth prepass (gears2-nx's rule): drawn, the base pass's depth misses it by a rounding difference between
 # two separately compiled vertex shaders, and the world turns red.
@@ -31,3 +34,24 @@ singularity_sin_prepaso_enmascarado = true
 # The first-person weapon's depth merged into the depth the depth of field reads (on). Off: in front of the sky or a
 # window the weapon was half replaced by the blurred background and looked see-through.
 singularity_dof_arma = true
+
+# Profiling & debugging:
+# Periodic per-draw GPU profile in logs/singularity_NNN.log (seconds between profiled frames; 0 = off).
+nfsmw_dk_perfil_gpu_s = 20
+# Debug controller shortcuts: ZL+ZR+R toggles 1 kHz CPU stack sampling (logs/rex/rex_perfil.log),
+# ZL+ZR+D-pad Left triggers a frame dump, ZL+ZR+D-pad Up toggles the on-screen FPS counter.
+switch_atajos_depuracion = true
+# Show FPS / frame time overlay at startup.
+switch_contador_fps = true
+
+# Motion (gyro) aiming:
+# 0 = off, 1 = while ZL (aim / zoom) is held, 2 = always on.
+input_gyro = 1
+# Sensitivity: try 1.8 - 2.2 for responsive fine aiming
+input_gyro_sensitivity = 1.8
+# Deadzone in degrees/sec (lower = responds to subtle wrist motion immediately)
+input_gyro_deadzone = 0.5
+# Starting stick offset past the deadzone to overcome UE3 internal stick deadzones
+input_gyro_min_stick = 11000
+input_gyro_invert_x = false
+input_gyro_invert_y = false

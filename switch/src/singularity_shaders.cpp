@@ -24,6 +24,7 @@
 
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <rex/system/xmemory.h>
 
 // xxHash reads with memcpy under GCC's strict aliasing (see shaders/ds_shader_library.cpp).
@@ -275,6 +276,8 @@ struct Biblioteca::Datos {
   std::vector<uint8_t> completa;
   bool por_demanda = false;
   uint64_t leidas = 0, leidas_ns = 0, fallidas = 0;
+  std::vector<uint32_t> leidas_recientes;
+  mutable std::mutex mutex_recientes;
   std::unordered_map<const void*, uint32_t> por_shader;
   std::map<std::pair<bool, uint32_t>, std::vector<uint32_t>> candidatos;  // (vertices, words) -> entries
   bool cargada = false;
@@ -292,6 +295,7 @@ struct Biblioteca::Datos {
   std::unordered_map<uint64_t, const EntradaShader*> por_microcodigo;  // step 3 results, nullptr included
   std::vector<uint32_t> temporal;
   Estadisticas estadisticas;
+  std::vector<const EntradaShader*> entradas_precargadas;
   uint32_t avisos_objetos = 0, avisos_cargas = 0, avisos_direccion = 0, avisos_parecido = 0;
 };
 
@@ -394,11 +398,56 @@ void Biblioteca::Completar(const EntradaShader* entrada) const {
   d.leidas_ns += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() -
                                                                                 inicio).count());
   ++d.leidas;
+  {
+    std::lock_guard<std::mutex> lock_recientes(d.mutex_recientes);
+    d.leidas_recientes.push_back(e.numero);
+  }
   if ((d.leidas & (d.leidas - 1)) == 0 && d.leidas >= 64) {
     REXLOG_INFO("[shaders] {} shaders read from the card so far ({:.2f} ms each on average)", d.leidas,
                 double(d.leidas_ns) / 1e6 / double(d.leidas));
   }
   d.completa[i] = 1;
+}
+
+std::vector<uint32_t> Biblioteca::TomarLeidasRecientes() {
+  Datos& d = *datos_;
+  std::lock_guard<std::mutex> lock(d.mutex_recientes);
+  std::vector<uint32_t> out;
+  out.swap(d.leidas_recientes);
+  return out;
+}
+
+void Biblioteca::PrecargarShader(uint32_t numero) {
+  Datos& d = *datos_;
+  if (numero < d.entradas.size()) {
+    Completar(&d.entradas[numero]);
+    d.entradas_precargadas.push_back(&d.entradas[numero]);
+  }
+}
+
+const std::vector<const rex::x360::EntradaShader*>& Biblioteca::EntradasPrecargadas() const {
+  return datos_->entradas_precargadas;
+}
+
+void Biblioteca::PrecargarLista(const std::filesystem::path& ruta) {
+  std::error_code ec;
+  if (!std::filesystem::exists(ruta, ec)) return;
+  std::ifstream f(ruta);
+  if (!f) return;
+  std::string line;
+  size_t count = 0;
+  const auto start = std::chrono::steady_clock::now();
+  while (std::getline(f, line)) {
+    size_t start_idx = line.find_first_not_of(" \t\r\n");
+    if (start_idx == std::string::npos || line[start_idx] == '#') continue;
+    try {
+      uint32_t num = std::stoul(line.substr(start_idx));
+      PrecargarShader(num);
+      ++count;
+    } catch (...) {}
+  }
+  const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+  REXLOG_INFO("[shaders] preload: {} shaders preloaded from {} in {:.1f} ms", count, ruta.filename().string(), ms);
 }
 
 const EntradaShader* Biblioteca::PorContenedor(std::span<const uint8_t> contenedor) const {

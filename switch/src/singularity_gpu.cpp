@@ -67,6 +67,7 @@ void singularity_log_main_thread();  // src/singularity_guards.cpp
 #include <unordered_map>
 #include <unordered_set>
 #include <cstdio>
+#include <fstream>
 #include <string>
 #include <filesystem>
 
@@ -374,6 +375,8 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     }
     // Before the game creates its shaders (the create hooks look the containers up in it).
     singularity::shaders::Global().Cargar(rex::filesystem::GetExecutableFolder() / "singularity_shaders.dslib");
+    singularity::shaders::Global().PrecargarLista(rex::filesystem::GetExecutableFolder() / "cache" / "preload_shaders.txt");
+    singularity::shaders::Global().PrecargarLista(rex::filesystem::GetExecutableFolder() / "preload_shaders.txt");
 #endif
     last_report_ = Clock::now();
     vblank_thread_ = rex::system::object_ref<rex::system::XHostThread>(new rex::system::XHostThread(
@@ -589,6 +592,10 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
         static_cast<rex::deko3d::ProveedorDeko3d*>(provider_.get()), memory_);
     if (destinos_) {
       REXLOG_INFO("[gpu] deko3d renderer backend up (minimal renderer: draws, resolves and the Swap's frontbuffer)");
+      const auto& precargadas = singularity::shaders::Global().EntradasPrecargadas();
+      if (!precargadas.empty()) {
+        destinos_->PrecargarShaders(precargadas);
+      }
     }
     return destinos_ != nullptr;
   }
@@ -2450,6 +2457,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     const auto stats = singularity::shaders::Global().estadisticas();
     uint64_t dksh = 0, dksh_ns = 0;
     if (destinos_) destinos_->PrimerosUsos(dksh, dksh_ns);
+    const auto shaders_leidos = singularity::shaders::Global().TomarLeidasRecientes();
     if (tiron_anterior_ != Clock::time_point{} && frame_.draws >= 100 && tirones_ < 40) {
       const double ms = std::chrono::duration<double, std::milli>(now - tiron_anterior_).count();
       if (ms >= 100.0) {
@@ -2458,6 +2466,14 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
                     "compilados leidos y preparados ({:.1f} ms)",
                     ms, frame_.draws, stats.leidas - tiron_leidas_, double(stats.leidas_ns - tiron_leidas_ns_) / 1e6,
                     dksh - tiron_dksh_, double(dksh_ns - tiron_dksh_ns_) / 1e6);
+        if (!shaders_leidos.empty()) {
+          std::string ids;
+          for (size_t i = 0; i < std::min<size_t>(shaders_leidos.size(), 30); ++i) {
+            ids += (i > 0 ? ", " : "") + std::to_string(shaders_leidos[i]);
+          }
+          if (shaders_leidos.size() > 30) ids += fmt::format("... (+{} mas)", shaders_leidos.size() - 30);
+          REXLOG_INFO("[tiron] shaders leidos: {}", ids);
+        }
       }
     }
     tiron_anterior_ = now;

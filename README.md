@@ -14,7 +14,7 @@ It reuses the Unreal Engine 3 on Switch stack of [gears2-nx](https://github.com/
 
 On a Switch Lite it runs at 960x540 with the CPU at 1785 MHz (the console's boost clock) and the GPU at 460.8 MHz: clean sound, heavy scenes playable, about 2 hours of battery. At the stock 1020 MHz CPU busy scenes drop below 20 fps and the sound crackles.
 
-Known issues: entering a new area can still hitch for up to ~0.8 s (the game's own loading work), and the first lightning flash of a scene for ~0.3 s.
+Known issues: entering a new area can still hitch for up to ~0.8 s (the game's own loading work). Lightning strike hitches are eliminated by targeted shader preloading.
 
 ### Instructions
 
@@ -48,11 +48,12 @@ Requirements: a Switch with Atmosphere running homebrew in title takeover mode (
    tools/switch/build-native.sh
    ```
 
-6. Optional, about +2-3 fps in big fights: turn off the characters' dynamic shadows in the game's own config (the NRO accepts the edited file: it recomputes the config's hash at startup). Other `[SystemSettings]` keys work the same way (`--list` shows them).
+6. Optional, about +3-5 ms GPU relief in heavy combat: apply the recommended graphics profile (lowered shadow map resolution to 256, simplified PCF shadow filtering, and disabled distortion and dynamic decals) to the game's config:
 
    ```bash
    python3 tools/switch/coalesced_settings.py singularity-extract/RvGame/CookedXenon/Coalesced_INT.bin \
-     out/Coalesced_INT.bin LightEnvironmentShadows=False
+     out/Coalesced_INT.bin \
+     MaxShadowResolution=256 bEnableBranchingPCFShadows=FALSE Distortion=False DropParticleDistortion=True DynamicDecals=False DecalCullDistanceScale=0.5
    ```
 
    Copy `out/Coalesced_INT.bin` over `singularity-extract/RvGame/CookedXenon/Coalesced_INT.bin` on the SD card.
@@ -70,7 +71,12 @@ Settings (`singularity.toml`):
 | `singularity_resolution = 540` | 960x540 instead of 1280x720, about 56% of the pixel work |
 | `singularity_patch_no_tiling = true` | Without it the bottom of the screen is red |
 | `singularity_sin_prepaso_z`, `singularity_sin_prepaso_enmascarado` | Without them the world turns red, and windows, rubbish and debris show a staircase of old frames |
+| `singularity_oclusion_anterior = true` | Answering pending occlusion queries with the previous frame's result immediately, eliminating CPU render stalls in heavy scenes |
 | `nfsmw_dk_compilar_variantes = false` | Never compiles a shader while playing (the general variant draws the same image); a runtime compile took a CPU core for 30+ s and the sound crackled |
+| `input_gyro = 1` | Gyroscopic motion aiming: 0 = off, 1 = active while aiming down sights with ZL, 2 = always on |
+| `input_gyro_sensitivity = 1.8` | Gyro aiming speed (0.1 to 5.0) |
+| `input_gyro_deadzone = 0.5` | Deadzone in degrees/second to filter hand tremors |
+| `input_gyro_min_stick = 11000` | Starting stick offset past deadzone to bypass UE3's internal stick curve |
 
 Game patches (applied by `tools/switch/codegen.sh`):
 
@@ -102,6 +108,8 @@ rexglue-sdk-nx patches (`patches/rexglue-sdk-nx/`):
 | `0014` | Vertex buffers read by the shader itself were copied whole for every draw (12-18 MB a frame in dense scenes); now cached like vertex streams (`nfsmw_dk_manuales_en_cache`) | Uploads 0.3-1.4 MB a frame, GPU ring thread ~60 % → 22-35 % of a core; dense areas 23-25 → 27-30 fps |
 | `0015` | The audio threads follow a core setting of their own (`singularity_nucleo_audio`, any core): on the ring's core, with more priority, the XMA decoder left the ring no room | The GPU ring has core 2 to itself |
 | `0016` | A pixel shader's first draw converted its whole SPIR-V to GLSL just to learn its inputs, every session (5-10 ms each, most of the lightning freeze). The results are kept in `cache/info_shaders.bin`; `tools/switch/shaders/dksh/ds_info` writes that file for the whole library on the PC (3.7 s), copy it to `cache/` next to the NRO | No shader conversion on the console at all; the lightning freeze went from ~1.6 s to ~0.3 s |
+| `0017` | Shaders loaded on-demand at lightning strikes caused stalls (~280 ms). Added two-tier shader preload support (`cache/preload_shaders.txt`): pre-loads bytecode sequentially and prepares GPU `DkShader` objects at startup | First lightning strike stalls reduced from 282 ms to 0 ms (locked 30 fps) |
+| `0018` | Added Switch hardware SixAxis gyroscopic aiming to `SwitchInputDriver`, additively combined with right-stick analog aiming | Smooth, responsive gyro-assisted aiming down sights |
 
 `overrides.toml` declares 277 function entry points the codegen analyzer misses (see singularity-recomp).
 
