@@ -34,6 +34,9 @@ singularity_sin_prepaso_enmascarado = true
 # The first-person weapon's depth merged into the depth the depth of field reads (on). Off: in front of the sky or a
 # window the weapon was half replaced by the blurred background and looked see-through.
 singularity_dof_arma = true
+# The weapon's depth also merged before its own shadow (and any other pass reading that depth after the weapon is
+# drawn). Off: the shadow was computed from the world behind the gun and the gun looked see-through near lights.
+singularity_sombra_arma = true
 
 # Profiling & debugging:
 # Periodic per-draw GPU profile in logs/singularity_NNN.log (seconds between profiled frames; 0 = off).

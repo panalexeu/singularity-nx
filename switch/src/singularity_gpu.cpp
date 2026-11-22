@@ -199,6 +199,12 @@ REXCVAR_DEFINE_BOOL(singularity_velocidad_prueba, false, "Singularity",
 REXCVAR_DEFINE_BOOL(singularity_dof_arma, true, "Singularity",
                     "La profundidad del arma en primera persona se suma a la que lee la profundidad de campo: sin ella, "
                     "delante del cielo el arma se mezclaba a medias con el cielo desenfocado y parecia transparente");
+REXCVAR_DEFINE_BOOL(singularity_sombra_arma, true, "Singularity",
+                    "Antes de un dibujo que lee una profundidad resuelta cuyo destino se borro y se volvio a dibujar (el "
+                    "arma en primera persona), la profundidad del arma se suma a esa textura: la sombra propia del arma "
+                    "(PS 1312) reconstruia la posicion con la profundidad del mundo y el arma parecia transparente");
+REXCVAR_DEFINE_BOOL(singularity_sombra_arma_prueba, false, "Singularity",
+                    "ZL+ZR+Right cambia singularity_sombra_arma con una captura, en vez de los modos de busqueda");
 REXCVAR_DEFINE_BOOL(singularity_arboles_prueba, false, "Singularity",
                     "ZL+ZR+Right cambia el modo de los arboles (0, 1, 2) con una captura, en vez de los modos de busqueda");
 REXCVAR_DEFINE_INT32(singularity_auto_volcado_dibujos, 800, "Singularity",
@@ -779,6 +785,32 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
                   merged);
     }
   }
+
+  // singularity_sombra_arma (see the call). Only samplers whose fetch format is a 24-bit depth (k_24_8, k_24_8_FLOAT)
+  // ask the renderer, which merges only after a full clear of the texture's target and new draws on it.
+  void MergeWeaponDepthBefore() {
+    using D = rex::x360::DestinosNativos;
+    for (const rex::x360::SamplerShader& sampler : ps_->samplers) {
+      if (sampler.registro >= 16) continue;
+      const uint32_t f0 = Register(0x4800 + uint32_t(sampler.registro) * 6);
+      const uint32_t f1 = Register(0x4800 + uint32_t(sampler.registro) * 6 + 1);
+      if ((f0 & 0x3) != 2) continue;
+      const uint32_t format = f1 & 0x3F;
+      if (format != 22 && format != 23) continue;
+      const uint32_t base = ((f1 >> 12) << 12) & 0x1FFFFFFF;
+      const int r = destinos_->FusionarProfundidadEn(base, true);
+      if (r == D::kFusionHecha) {
+        ++dof_.early;
+        if (dof_.early_logged < 6) {
+          ++dof_.early_logged;
+          REXLOG_INFO("[gpu] weapon depth merged into {:08X} before PS n{} (sampler {}), draw {} of the frame", base,
+                      ps_->numero, sampler.registro, frame_.draws);
+        }
+      } else if (r < 0) {
+        ++dof_.failed[std::min(3, -r - 1)];
+      }
+    }
+  }
 #endif
 
   // One line every kReportEvery, on the ring thread, so the log shows whether the game is advancing.
@@ -869,13 +901,15 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
                   queries_answered_ ? double(queries_wait_us_) / 1000.0 / double(queries_answered_) : 0.0, q[3], q[4],
                   queries_not_waited_, queries_timed_out_, pending_queries_.size(), queries_from_previous_);
     }
-    if (dof_.merged || dof_.already || dof_.unknown || dof_.failed[0] || dof_.failed[1] || dof_.failed[2] ||
-        dof_.failed[3]) {
-      REXLOG_INFO("[gpu] depth of field weapon depth: {} merged ({} where the last depth resolve was another texture), "
-                  "{} already merged, {} with no depth sampler ({} merged by the old rule), refused {}/{}/{}/{}",
-                  dof_.merged, dof_.redirected, dof_.already, dof_.unknown, dof_.unknown_old_merged, dof_.failed[0],
-                  dof_.failed[1], dof_.failed[2], dof_.failed[3]);
-      dof_.merged = dof_.redirected = dof_.already = dof_.unknown = dof_.unknown_old_merged = 0;
+    if (dof_.merged || dof_.already || dof_.unknown || dof_.early || dof_.failed[0] || dof_.failed[1] ||
+        dof_.failed[2] || dof_.failed[3]) {
+      REXLOG_INFO("[gpu] weapon depth: {} merged before other passes (its shadow), {} at the depth of field ({} where "
+                  "the last depth resolve was another texture), {} already merged, {} with no depth sampler ({} merged "
+                  "by the old rule), refused {}/{}/{}/{}; singularity_sombra_arma {}",
+                  dof_.early, dof_.merged, dof_.redirected, dof_.already, dof_.unknown, dof_.unknown_old_merged,
+                  dof_.failed[0], dof_.failed[1], dof_.failed[2], dof_.failed[3],
+                  REXCVAR_GET(singularity_sombra_arma) ? "on" : "off");
+      dof_.merged = dof_.redirected = dof_.already = dof_.unknown = dof_.unknown_old_merged = dof_.early = 0;
       dof_.failed = {};
     }
     // Which unknown vertex shaders the skipped draws had, the most frequent first, with one draw's state each.
@@ -987,6 +1021,13 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
                         REXCVAR_GET(singularity_velocidad_sin_z) ? "WITHOUT depth test" : "with their depth test");
             tree_capture_after_ = 3;
           }
+          if (REXCVAR_GET(switch_omitir_pedido) && REXCVAR_GET(singularity_sombra_arma_prueba)) {
+            REXCVAR_SET(switch_omitir_pedido, false);
+            REXCVAR_SET(singularity_sombra_arma, !REXCVAR_GET(singularity_sombra_arma));
+            REXLOG_INFO("[gpu] weapon depth before the weapon's shadow: {} (the next capture shows it)",
+                        REXCVAR_GET(singularity_sombra_arma) ? "ON (fix)" : "OFF (as before)");
+            tree_capture_after_ = 3;
+          }
           if (REXCVAR_GET(switch_omitir_pedido) && REXCVAR_GET(singularity_arboles_prueba)) {
             REXCVAR_SET(switch_omitir_pedido, false);
             REXCVAR_SET(singularity_arboles, (REXCVAR_GET(singularity_arboles) + 1) % 5);
@@ -998,8 +1039,9 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
           }
           if (tree_capture_after_ && --tree_capture_after_ == 0) {
             SaveCapture();
-            REXLOG_INFO("[gpu] capture above: trees mode {}, velocity depth test {}", REXCVAR_GET(singularity_arboles),
-                        REXCVAR_GET(singularity_velocidad_sin_z) ? "off" : "on");
+            REXLOG_INFO("[gpu] capture above: trees mode {}, velocity depth test {}, weapon depth before its shadow {}",
+                        REXCVAR_GET(singularity_arboles), REXCVAR_GET(singularity_velocidad_sin_z) ? "off" : "on",
+                        REXCVAR_GET(singularity_sombra_arma) ? "on" : "off");
           }
           if (REXCVAR_GET(switch_omitir_pedido)) {
             REXCVAR_SET(switch_omitir_pedido, false);
@@ -1845,6 +1887,13 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
         (ps_->huella_contenedor == UINT64_C(0x45798833042698A5) ||
          ps_->huella_contenedor == UINT64_C(0x18376612FA2C403D))) {
       MergeDofDepth();
+    }
+    // singularity_sombra_arma: any other draw reading a resolved depth whose target was cleared and drawn on again
+    // since (the weapon's pass) gets the weapon's depth merged in first. The weapon's own modulated shadow (PS n1312,
+    // after the weapon) rebuilt each pixel's position from that depth: on the weapon it used the world behind it, and
+    // the world's shapes (rails, posts) were multiplied onto the gun, which looked see-through.
+    else if (REXCVAR_GET(singularity_sombra_arma) && ps_) {
+      MergeWeaponDepthBefore();
     }
     const bool drawn = destinos_->Dibujar(request);
     if (tree_identity) {
@@ -2874,7 +2923,8 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
   uint64_t generacion_vs_ = 0, generacion_constantes_vs_ = 0, generacion_constantes_ps_ = 0;
   bool dof_merge_logged_ = false;  // singularity_dof_arma: said once that the merge works
   struct DofMergeStats {
-    uint64_t merged = 0, redirected = 0, already = 0, unknown = 0, unknown_old_merged = 0;
+    uint64_t merged = 0, redirected = 0, already = 0, unknown = 0, unknown_old_merged = 0, early = 0;
+    uint32_t early_logged = 0;
     std::array<uint64_t, 4> failed{};  // FusionarProfundidadEn -1..-4
     uint32_t redirected_logged = 0, failed_logged = 0, unknown_logged = 0;
   } dof_;  // singularity_dof_arma, per Report interval (the *_logged caps are for the whole run)
