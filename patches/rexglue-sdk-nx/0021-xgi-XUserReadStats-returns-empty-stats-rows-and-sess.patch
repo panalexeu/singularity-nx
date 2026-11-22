@@ -1,0 +1,185 @@
+From 09f9ee4e646cf2e963ed5ec4463187a58aacded6 Mon Sep 17 00:00:00 2001
+From: Oleksii Horchynskyi <pan.alexeu@gmail.com>
+Date: Sun, 22 Nov 2026 17:23:34 +0200
+Subject: [PATCH] xgi: XUserReadStats returns empty stats rows and session
+ searches return 0 results (no Xbox Live)
+
+XUserReadStats (0x000B0021) answered success without writing its results: Singularity's Quick/Public Match skill read
+then took XUSER_STATS_READ_RESULTS::pViews as null and crashed reading view->dwNumRows (guest read of 0x8). Now every
+requested view has one row per player with every requested column, value type NULL and zero bits (the game falls
+back to its default skill); the required size is reported with ERROR_INSUFFICIENT_BUFFER when the buffer is
+missing or too small. XSessionSearch, -Ex, -ByID, -ByIds and -Weighted write a valid
+XSESSION_SEARCHRESULT_HEADER with 0 results instead of leaving the game's bytes. One info line per call, capped.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/kernel/xam/apps/xgi_app.cpp | 104 ++++++++++++++++++++++++++++++--
+ 1 file changed, 99 insertions(+), 5 deletions(-)
+
+diff --git a/src/kernel/xam/apps/xgi_app.cpp b/src/kernel/xam/apps/xgi_app.cpp
+index 2b222da..4e4c928 100644
+--- a/src/kernel/xam/apps/xgi_app.cpp
++++ b/src/kernel/xam/apps/xgi_app.cpp
+@@ -13,6 +13,9 @@
+ #include <rex/logging.h>
+ #include <rex/thread.h>
+ 
++#include <algorithm>
++#include <cstring>
++
+ namespace rex {
+ namespace kernel {
+ namespace xam {
+@@ -23,6 +26,43 @@ using namespace rex::system;
+ 
+ XgiApp::XgiApp(KernelState* kernel_state) : App(kernel_state, 0xFB) {}
+ 
++namespace {
++
++// The size argument of the search/stats calls: the API passes a pointer to the size (pcbResultsBuffer), some
++// wrappers the size itself. A value that is a guest heap/stack address is the pointer.
++bool EsDireccionGuest(uint32_t v) { return v >= 0x40000000u; }
++
++uint32_t TamanoDisponible(memory::Memory* memoria, uint32_t arg) {
++  if (!arg) return 0;
++  return EsDireccionGuest(arg) ? memory::load_and_swap<uint32_t>(memoria->TranslateVirtual(arg)) : arg;
++}
++
++void EscribirTamano(memory::Memory* memoria, uint32_t arg, uint32_t tamano) {
++  if (EsDireccionGuest(arg)) memory::store_and_swap<uint32_t>(memoria->TranslateVirtual(arg), tamano);
++}
++
++// No session found: a valid XSESSION_SEARCHRESULT_HEADER {dwSearchResults = 0, pResults} instead of the bytes the
++// game left there (Quick/Public Match read the count right after the search).
++X_HRESULT BusquedaSinResultados(memory::Memory* memoria, const char* que, uint32_t tamano_arg, uint32_t resultados_ptr) {
++  static uint32_t avisos = 0;
++  if (avisos < 8) {
++    ++avisos;
++    REXKRNL_INFO("{}: no sessions (no Xbox Live): 0 results", que);
++  }
++  if (tamano_arg && TamanoDisponible(memoria, tamano_arg) < 8) {
++    EscribirTamano(memoria, tamano_arg, 8);
++    return X_ERROR_INSUFFICIENT_BUFFER;
++  }
++  if (resultados_ptr) {
++    uint8_t* h = memoria->TranslateVirtual(resultados_ptr);
++    memory::store_and_swap<uint32_t>(h + 0, 0);
++    memory::store_and_swap<uint32_t>(h + 4, resultados_ptr + 8);
++  }
++  return X_E_SUCCESS;
++}
++
++}  // namespace
++
+ // http://mb.mirage.org/bugzilla/xliveless/main.c
+ 
+ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+@@ -179,7 +219,7 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+       REXKRNL_DEBUG("XSessionSearch({}, {}, {}, {}, {}, {:08X}, {:08X}, {}, {:08X})", proc_index,
+                     user_index, num_results, num_props, num_ctx, props_ptr, ctx_ptr,
+                     results_buffer_size, search_results_ptr);
+-      return X_E_SUCCESS;
++      return BusquedaSinResultados(memory_, "XSessionSearch", results_buffer_size, search_results_ptr);
+     }
+     case 0x000B0018: {
+       assert_true(!buffer_length || buffer_length == 16);
+@@ -214,7 +254,7 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+                     proc_index, user_index, num_results, num_props, num_ctx, props_ptr, ctx_ptr,
+                     results_buffer_size, search_results_ptr, num_users);
+ 
+-      return X_E_SUCCESS;
++      return BusquedaSinResultados(memory_, "XSessionSearchEx", results_buffer_size, search_results_ptr);
+     }
+     case 0x000B001D: {
+       assert_true(!buffer_length || buffer_length == 24);
+@@ -289,7 +329,7 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+                     user_index, num_session_ids, session_ids_ptr, results_buffer_size,
+                     search_results_ptr, reserved1, reserved2, reserved3);
+ 
+-      return X_E_SUCCESS;
++      return BusquedaSinResultados(memory_, "XSessionSearchByID", results_buffer_size, search_results_ptr);
+     }
+     case 0x000B001F: {
+       assert_true(!buffer_length || buffer_length == 24);
+@@ -330,6 +370,60 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+       REXKRNL_DEBUG("XUserReadStats({}, {}, {:08X}, {}, {:08X}, {}, {:08X})", title_id, xuids_count,
+                     xuids_ptr, specs_count, specs_ptr, results_size, results_ptr);
+ 
++      // No Xbox Live: every player has a row with no stats (every requested column, value type NULL, zero bits).
++      // Answered as success without writing anything, the game read XUSER_STATS_READ_RESULTS::pViews as null
++      // (Singularity's Quick/Public Match skill read crashed at view->dwNumRows). Layouts: results {dwNumViews,
++      // pViews} 8; view {dwViewId, dwTotalViewRows, dwNumRows, pRows} 16; row {xuid, dwRank, i64Rating,
++      // szGamertag[16], dwNumColumns, pColumns} 48; column {wColumnId, XUSER_DATA} 24; spec {dwViewId,
++      // dwNumColumnIds, rgwColumnIds[64]} 136.
++      if (xuids_count > 64 || specs_count > 64) {
++        return X_E_INVALIDARG;
++      }
++      uint32_t columnas = 0;
++      for (uint32_t v = 0; v < specs_count; ++v) {
++        const uint8_t* spec = memory_->TranslateVirtual(specs_ptr + v * 136);
++        columnas += std::min<uint32_t>(memory::load_and_swap<uint32_t>(spec + 4), 64);
++      }
++      const uint32_t necesario = 8 + specs_count * 16 + specs_count * xuids_count * 48 + columnas * xuids_count * 24;
++      static uint32_t avisos = 0;
++      if (avisos < 8) {
++        ++avisos;
++        REXKRNL_INFO("XUserReadStats: {} players, {} views, {} columns: empty stats ({} bytes, buffer {})",
++                     xuids_count, specs_count, columnas, necesario, TamanoDisponible(memory_, results_size));
++      }
++      if (!results_ptr || TamanoDisponible(memory_, results_size) < necesario) {
++        EscribirTamano(memory_, results_size, necesario);
++        return X_ERROR_INSUFFICIENT_BUFFER;
++      }
++      uint8_t* r = memory_->TranslateVirtual(results_ptr);
++      std::memset(r, 0, necesario);
++      memory::store_and_swap<uint32_t>(r + 0, specs_count);
++      memory::store_and_swap<uint32_t>(r + 4, specs_count ? results_ptr + 8 : 0);
++      uint32_t siguiente = results_ptr + 8 + specs_count * 16;  // rows, then columns
++      for (uint32_t v = 0; v < specs_count; ++v) {
++        const uint8_t* spec = memory_->TranslateVirtual(specs_ptr + v * 136);
++        const uint32_t n_columnas = std::min<uint32_t>(memory::load_and_swap<uint32_t>(spec + 4), 64);
++        uint8_t* vista = r + 8 + v * 16;
++        memory::store_and_swap<uint32_t>(vista + 0, memory::load_and_swap<uint32_t>(spec + 0));
++        memory::store_and_swap<uint32_t>(vista + 4, xuids_count);
++        memory::store_and_swap<uint32_t>(vista + 8, xuids_count);
++        const uint32_t filas_ptr = siguiente;
++        memory::store_and_swap<uint32_t>(vista + 12, xuids_count ? filas_ptr : 0);
++        siguiente += xuids_count * 48;
++        for (uint32_t f = 0; f < xuids_count; ++f) {
++          uint8_t* fila = memory_->TranslateVirtual(filas_ptr + f * 48);
++          memory::store_and_swap<uint64_t>(fila + 0,
++                                           memory::load_and_swap<uint64_t>(memory_->TranslateVirtual(xuids_ptr + f * 8)));
++          memory::store_and_swap<uint32_t>(fila + 40, n_columnas);
++          memory::store_and_swap<uint32_t>(fila + 44, n_columnas ? siguiente : 0);
++          for (uint32_t c = 0; c < n_columnas; ++c) {
++            uint8_t* columna = memory_->TranslateVirtual(siguiente + c * 24);
++            memory::store_and_swap<uint16_t>(columna + 0, memory::load_and_swap<uint16_t>(spec + 8 + c * 2));
++            columna[8] = 0xFF;  // XUSER_DATA_TYPE_NULL: no value
++          }
++          siguiente += n_columnas * 24;
++        }
++      }
+       return X_E_SUCCESS;
+     }
+     case 0x000B0025: {
+@@ -410,7 +504,7 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+                     user_index, num_session_ids, session_ids_ptr, results_buffer_size,
+                     search_results_ptr, reserved1, reserved2, reserved3);
+ 
+-      return X_E_SUCCESS;
++      return BusquedaSinResultados(memory_, "XSessionSearchByIds", results_buffer_size, search_results_ptr);
+     }
+     case 0x000B0065: {
+       assert_true(!buffer_length || buffer_length == 52);
+@@ -439,7 +533,7 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+           non_weighted_search_properties_ptr, non_weighted_search_contexts_ptr, results_buffer_size,
+           search_results_ptr, num_users, weighted_search);
+ 
+-      return X_E_SUCCESS;
++      return BusquedaSinResultados(memory_, "XSessionSearchWeighted", results_buffer_size, search_results_ptr);
+     }
+     case 0x000B0071: {
+       REXKRNL_DEBUG("XGI 0x000B0071, unimplemented");
+-- 
+2.43.0
+
