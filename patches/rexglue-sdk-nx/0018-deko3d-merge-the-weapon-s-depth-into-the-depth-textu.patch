@@ -1,0 +1,164 @@
+From 3ca2325a25d9cf0ec99336f0e5e5d1eed3b0eee0 Mon Sep 17 00:00:00 2001
+From: Oleksii Horchynskyi <pan.alexeu@gmail.com>
+Date: Sun, 22 Nov 2026 16:25:28 +0200
+Subject: [PATCH] deko3d: merge the weapon's depth into the depth texture a
+ pass samples (FusionarProfundidadEn), not the last depth resolve
+
+FusionarProfundidadPosterior merged into the texture of the last depth resolve done by copying. A shadow map
+resolved after the scene depth (any depth target under 720 wide is 720 tall, so its resolve is never "the whole
+target" and goes through the copy path) took it over: the merge went into the shadow texture and the scene depth
+the depth of field reads kept the world's depth under the first-person weapon (the gun see-through again whenever a
+shadowed dynamic light was on).
+
+- Every copy-path depth resolve is remembered by texture address (z_resueltas_), once per resolve; a swap-path
+  resolve to the same address forgets it. FusionarProfundidadEn(base) merges into that texture; returns kFusion*.
+- UltimaResolucionProfundidad: the old rule's choice, for diagnostics.
+- ZCULL invalidated before the merge's depth-tested copy and for the next depth target bound.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ include/rex/x360/deko/render.h | 11 ++++++++
+ include/rex/x360/destinos.h    |  8 ++++++
+ src/x360/deko/destinos.cpp     | 49 +++++++++++++++++++++++++++++++---
+ 3 files changed, 64 insertions(+), 4 deletions(-)
+
+diff --git a/include/rex/x360/deko/render.h b/include/rex/x360/deko/render.h
+index f6ad1e0..179b202 100644
+--- a/include/rex/x360/deko/render.h
++++ b/include/rex/x360/deko/render.h
+@@ -183,6 +183,8 @@ class RenderDk final : public DestinosNativos {
+   bool Dibujar(const PeticionDibujo& peticion) override;  // nfsmw_dk_dibujos.cpp
+   void PedirVolcado() override { volcado_pedido_ = true; }
+   bool FusionarProfundidadPosterior() override;
++  int FusionarProfundidadEn(uint32_t base_textura) override;
++  uint32_t UltimaResolucionProfundidad() const override { return ultima_z_valida_ ? ultima_z_textura_ : 0; }
+   void PrecargarShaders(std::span<const EntradaShader* const> entradas) override;
+   void PrimerosUsos(uint64_t& lecturas, uint64_t& nanosegundos) const override;
+   EstadisticasDibujos EstadisticasDeDibujos() const override;
+@@ -249,6 +251,15 @@ class RenderDk final : public DestinosNativos {
+   uint32_t ultima_z_info_ = 0, ultima_z_pitch_ = 0, ultima_z_textura_ = 0;
+   std::array<uint32_t, 6> ultima_z_rect_{};  // source x, y, width, height; destination x, y
+   bool ultima_z_valida_ = false;
++  // Every depth resolve done by copying, by texture address, for FusionarProfundidadEn: its target and rectangle, and
++  // whether it has been merged since (pendiente = not yet). A swap-path resolve to the address removes it.
++  struct ZResuelta {
++    uint32_t info = 0, pitch = 0;
++    std::array<uint32_t, 6> rect{};
++    bool pendiente = false;
++  };
++  std::unordered_map<uint32_t, ZResuelta> z_resueltas_;
++  bool FusionarDesde(uint32_t info, uint32_t pitch, uint32_t base, const std::array<uint32_t, 6>& r, int& motivo);
+   bool rop_sin_barrera_ = true;
+   bool copia3d_pendiente_ = false;
+   uint64_t copias_3d_ = 0, barreras_fragmentos_ = 0;
+diff --git a/include/rex/x360/destinos.h b/include/rex/x360/destinos.h
+index fb8c43a..1fc190f 100644
+--- a/include/rex/x360/destinos.h
++++ b/include/rex/x360/destinos.h
+@@ -121,6 +121,14 @@ class DestinosNativos {
+   // larger value): what was drawn there after the resolve (a first-person weapon after its own depth clear) reaches
+   // the post-processing that samples the texture. false if there was nothing to merge.
+   virtual bool FusionarProfundidadPosterior() { return false; }
++  // The same, into the resolved depth texture at base_textura (a draw's sampled texture address) instead of the last
++  // depth resolve: a later resolve of another depth target (a shadow map after the scene depth) does not redirect it.
++  // Once per resolve of that texture. Returns kFusion*.
++  static constexpr int kFusionHecha = 1, kFusionNoEsZ = 0, kFusionYaHecha = 2, kFusionSinDestino = -1,
++                       kFusionSinTextura = -2, kFusionRectangulo = -3, kFusionCopiaFallo = -4;
++  virtual int FusionarProfundidadEn(uint32_t base_textura) { (void)base_textura; return kFusionNoEsZ; }
++  // The texture address of the last depth resolve done by copying (what FusionarProfundidadPosterior uses), 0 if none.
++  virtual uint32_t UltimaResolucionProfundidad() const { return 0; }
+   // Preloads the given shaders into the backend (DKSH cache / GPU preparation).
+   virtual void PrecargarShaders(std::span<const EntradaShader* const> entradas) { (void)entradas; }
+   // First uses so far: compiled shaders read from the card, and the time spent (reading them and preparing each shader
+diff --git a/src/x360/deko/destinos.cpp b/src/x360/deko/destinos.cpp
+index 838819f..76d61d5 100644
+--- a/src/x360/deko/destinos.cpp
++++ b/src/x360/deko/destinos.cpp
+@@ -1670,6 +1670,7 @@ void RenderDk::CopiarProfundidad(const RegistrosCopia& reg, uint32_t pitch, bool
+                       resuelta->imagen.alto == profundidad->alto && resuelta->imagen.formato == profundidad->formato;
+   if (sin_copia && entero && (borrara || REXCVAR_GET(nfsmw_nativo_intercambiar_sin_borrado))) {
+     IntercambiarImagenes(*profundidad, resuelta->imagen);
++    z_resueltas_.erase(base);  // the texture is the target's own image now: nothing to merge into it
+     profundidad->contenido_invalido = true;  // its content is in the texture now
+     profundidad->resuelta_base = base;
+     resuelta->escrita = true;
+@@ -1702,6 +1703,7 @@ void RenderDk::CopiarProfundidad(const RegistrosCopia& reg, uint32_t pitch, bool
+   ultima_z_textura_ = base;
+   ultima_z_rect_ = {uint32_t(x0), uint32_t(y0), ancho, alto, dx, dy};
+   ultima_z_valida_ = true;
++  z_resueltas_[base] = ZResuelta{info, pitch, ultima_z_rect_, true};
+   OlvidarEstado();
+ }
+ 
+@@ -1710,25 +1712,64 @@ bool RenderDk::FusionarProfundidadPosterior() {
+     return false;
+   }
+   ultima_z_valida_ = false;  // once per resolve
+-  ImagenDk* profundidad = DestinoProfundidad(ultima_z_info_ & 0xFFF, (ultima_z_info_ >> 16) & 0x1, ultima_z_pitch_);
+-  const auto it = resueltas_.find(ultima_z_textura_);
+-  if (!profundidad || it == resueltas_.end() || !it->second.imagen.profundidad || profundidad->contenido_invalido) {
++  if (auto it = z_resueltas_.find(ultima_z_textura_); it != z_resueltas_.end()) {
++    it->second.pendiente = false;
++  }
++  int motivo = 0;
++  return FusionarDesde(ultima_z_info_, ultima_z_pitch_, ultima_z_textura_, ultima_z_rect_, motivo);
++}
++
++int RenderDk::FusionarProfundidadEn(uint32_t base_textura) {
++  base_textura &= 0x1FFFFFFF;
++  const auto it = z_resueltas_.find(base_textura);
++  if (it == z_resueltas_.end()) {
++    return kFusionNoEsZ;
++  }
++  if (!it->second.pendiente) {
++    return kFusionYaHecha;
++  }
++  it->second.pendiente = false;  // once per resolve
++  if (ultima_z_valida_ && ultima_z_textura_ == base_textura) {
++    ultima_z_valida_ = false;  // the same merge as FusionarProfundidadPosterior's
++  }
++  const ZResuelta z = it->second;
++  int motivo = kFusionHecha;
++  FusionarDesde(z.info, z.pitch, base_textura, z.rect, motivo);
++  return motivo;
++}
++
++bool RenderDk::FusionarDesde(uint32_t info, uint32_t pitch, uint32_t base, const std::array<uint32_t, 6>& r,
++                             int& motivo) {
++  ImagenDk* profundidad = DestinoProfundidad(info & 0xFFF, (info >> 16) & 0x1, pitch);
++  if (!profundidad || profundidad->contenido_invalido) {
++    motivo = kFusionSinDestino;
++    return false;
++  }
++  const auto it = resueltas_.find(base);
++  if (it == resueltas_.end() || !it->second.imagen.profundidad) {
++    motivo = kFusionSinTextura;
+     return false;
+   }
+   Resuelta& resuelta = it->second;
+-  const auto& r = ultima_z_rect_;
+   if (r[2] == 0 || r[3] == 0 || r[0] + r[2] > profundidad->ancho || r[1] + r[3] > profundidad->alto ||
+       r[4] + r[2] > resuelta.imagen.ancho || r[5] + r[3] > resuelta.imagen.alto) {
++    motivo = kFusionRectangulo;
+     return false;
+   }
+   AsegurarTrabajo();
+   EmitirCieloPendiente();
+   HacerBorradoPendiente(*profundidad);  // a clear still pending is the target's real content
++  // The copy tests depth (Greater) into a texture that was never cleared as a depth target: whatever ZCULL holds
++  // must not cull it. Afterwards the next depth target bound starts with ZCULL invalid too.
++  dkCmdBufBarrier(nucleo_.comandos(), DkBarrier_None, DkInvalidateFlags_Zcull);
+   if (!Copiar3D(*profundidad, r[0], r[1], r[2], r[3], resuelta.imagen, r[4], r[5], nullptr, false, 1.0f, true)) {
++    motivo = kFusionCopiaFallo;
+     return false;
+   }
++  invalidar_zcull_ = true;
+   ++resuelta.imagen.version;
+   OlvidarEstado();
++  motivo = kFusionHecha;
+   return true;
+ }
+ 
+-- 
+2.43.0
+

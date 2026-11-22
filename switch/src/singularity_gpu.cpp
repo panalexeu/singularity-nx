@@ -716,6 +716,71 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     return 0;
   }
 
+#if SINGULARITY_DEKO3D
+  // singularity_dof_arma (see the call): merges the weapon's depth into each depth texture the depth of field pass
+  // samples. Counts what happened for Report; the first few times something unusual happens, one line each.
+  void MergeDofDepth() {
+    using D = rex::x360::DestinosNativos;
+    const uint32_t last = destinos_->UltimaResolucionProfundidad();
+    uint32_t merged = 0;
+    bool known = false;
+    for (const rex::x360::SamplerShader& sampler : ps_->samplers) {
+      if (sampler.registro >= 16) continue;
+      const uint32_t f0 = Register(0x4800 + uint32_t(sampler.registro) * 6);
+      const uint32_t f1 = Register(0x4800 + uint32_t(sampler.registro) * 6 + 1);
+      if ((f0 & 0x3) != 2) continue;  // not a texture fetch
+      const uint32_t base = ((f1 >> 12) << 12) & 0x1FFFFFFF;
+      const int r = destinos_->FusionarProfundidadEn(base);
+      if (r == D::kFusionNoEsZ) continue;
+      known = true;
+      if (r == D::kFusionHecha) {
+        ++dof_.merged;
+        merged = base;
+        if (last && last != base) {
+          // The old rule (the last depth resolve) would have merged into another texture: the see-through gun.
+          ++dof_.redirected;
+          if (dof_.redirected_logged < 8) {
+            ++dof_.redirected_logged;
+            REXLOG_INFO("[gpu] depth of field: weapon depth merged into {:08X} (sampler {}); the last depth resolve "
+                        "went to {:08X}, the old rule would have missed the gun", base, sampler.registro, last);
+          }
+        }
+      } else if (r == D::kFusionYaHecha) {
+        ++dof_.already;
+      } else {
+        ++dof_.failed[std::min(3, -r - 1)];
+        if (dof_.failed_logged < 8) {
+          ++dof_.failed_logged;
+          REXLOG_INFO("[gpu] depth of field: merge into {:08X} (sampler {}) refused, reason {} (-1 no target, -2 no "
+                      "texture, -3 rectangle, -4 copy)", base, sampler.registro, r);
+        }
+      }
+    }
+    if (!known) {
+      // No sampler of the pass is a depth texture resolved by copying: the old rule, so nothing is lost.
+      ++dof_.unknown;
+      const bool old_merged = destinos_->FusionarProfundidadPosterior();
+      dof_.unknown_old_merged += old_merged;
+      if (dof_.unknown_logged < 4) {
+        ++dof_.unknown_logged;
+        std::string fetches;
+        for (const rex::x360::SamplerShader& sampler : ps_->samplers) {
+          if (sampler.registro >= 16) continue;
+          const uint32_t f = 0x4800 + uint32_t(sampler.registro) * 6;
+          fetches += fmt::format(" s{}:{:08X}/{:08X}", sampler.registro, Register(f), Register(f + 1));
+        }
+        REXLOG_INFO("[gpu] depth of field PS n{}: no sampler is a depth resolve (last one {:08X}, old rule {}):{}",
+                    ps_->numero, last, old_merged ? "merged" : "nothing", fetches);
+      }
+    }
+    if (merged && !dof_merge_logged_) {
+      dof_merge_logged_ = true;
+      REXLOG_INFO("[gpu] depth of field: the weapon's depth merged into the post-processing depth {:08X} (first time)",
+                  merged);
+    }
+  }
+#endif
+
   // One line every kReportEvery, on the ring thread, so the log shows whether the game is advancing.
   void Report() {
     const auto now = Clock::now();
@@ -803,6 +868,15 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
                   q[0], q[1], queries_answered_, queries_hidden_,
                   queries_answered_ ? double(queries_wait_us_) / 1000.0 / double(queries_answered_) : 0.0, q[3], q[4],
                   queries_not_waited_, queries_timed_out_, pending_queries_.size(), queries_from_previous_);
+    }
+    if (dof_.merged || dof_.already || dof_.unknown || dof_.failed[0] || dof_.failed[1] || dof_.failed[2] ||
+        dof_.failed[3]) {
+      REXLOG_INFO("[gpu] depth of field weapon depth: {} merged ({} where the last depth resolve was another texture), "
+                  "{} already merged, {} with no depth sampler ({} merged by the old rule), refused {}/{}/{}/{}",
+                  dof_.merged, dof_.redirected, dof_.already, dof_.unknown, dof_.unknown_old_merged, dof_.failed[0],
+                  dof_.failed[1], dof_.failed[2], dof_.failed[3]);
+      dof_.merged = dof_.redirected = dof_.already = dof_.unknown = dof_.unknown_old_merged = 0;
+      dof_.failed = {};
     }
     // Which unknown vertex shaders the skipped draws had, the most frequent first, with one draw's state each.
     std::vector<std::pair<uint64_t, uint64_t>> skips(unknown_vs_skips_.begin(), unknown_vs_skips_.end());
@@ -1764,13 +1838,13 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     // (PS 18376612FA2C403D) weigh the blur by the scene depth resolved before the first-person weapon was drawn. The
     // weapon's pixels got the depth behind them: in front of the sky (past the far plane) half of each became the
     // blurred sky, and the gun looked see-through. The weapon's depth is merged into that texture first.
+    // Into the depth texture this pass samples (its samplers' fetch constants), not the last depth resolve: a shadow
+    // map resolved after the scene depth (a dynamic light, the weapon pass's own shadows) took the merge, and the gun
+    // went see-through again whenever such a light was on.
     if (REXCVAR_GET(singularity_dof_arma) && ps_ &&
         (ps_->huella_contenedor == UINT64_C(0x45798833042698A5) ||
          ps_->huella_contenedor == UINT64_C(0x18376612FA2C403D))) {
-      if (destinos_->FusionarProfundidadPosterior() && !dof_merge_logged_) {
-        dof_merge_logged_ = true;
-        REXLOG_INFO("[gpu] depth of field: the weapon's depth merged into the post-processing depth (first time)");
-      }
+      MergeDofDepth();
     }
     const bool drawn = destinos_->Dibujar(request);
     if (tree_identity) {
@@ -2799,6 +2873,11 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
   std::unordered_map<uint64_t, uint64_t> vs_generations_;
   uint64_t generacion_vs_ = 0, generacion_constantes_vs_ = 0, generacion_constantes_ps_ = 0;
   bool dof_merge_logged_ = false;  // singularity_dof_arma: said once that the merge works
+  struct DofMergeStats {
+    uint64_t merged = 0, redirected = 0, already = 0, unknown = 0, unknown_old_merged = 0;
+    std::array<uint64_t, 4> failed{};  // FusionarProfundidadEn -1..-4
+    uint32_t redirected_logged = 0, failed_logged = 0, unknown_logged = 0;
+  } dof_;  // singularity_dof_arma, per Report interval (the *_logged caps are for the whole run)
   // TironSiLoHubo: the previous frame's end and the first-use counters then.
   Clock::time_point tiron_anterior_{};
   uint64_t tiron_leidas_ = 0, tiron_leidas_ns_ = 0, tiron_dksh_ = 0, tiron_dksh_ns_ = 0;
