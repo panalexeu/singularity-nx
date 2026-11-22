@@ -1,3 +1,22 @@
+From 61be42a683b8224ecb43f510bc7b458768162ea9 Mon Sep 17 00:00:00 2001
+From: Oleksii Horchynskyi <pan.alexeu@gmail.com>
+Date: Sun, 22 Nov 2026 16:58:54 +0200
+Subject: [PATCH 18/20] xam: spoof Xbox Live sign-in, Ethernet link and
+ privileges (multiplayer menus)
+
+- UserProfile::signin_state reports SignedInToLive (2) instead of SignedInLocally (1).
+- XamUserGetSigninInfo sets the LIVE_ENABLED info flag.
+- XamUserCheckPrivilege grants every privilege (multiplayer, user content, chat) instead of denying them.
+- XNetGetTitleXnAddr reports Ethernet, static, gateway, DNS and online, with a loopback online address
+  (127.0.0.1:1000) and non-zero abOnline; XNetGetEthernetLinkStatus reports an active 100 Mbps full-duplex link.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ include/rex/system/xam/user_profile.h |  2 +-
+ src/kernel/xam/xam_net.cpp            | 32 +++++++++++----------------
+ src/kernel/xam/xam_user.cpp           |  5 +++--
+ 3 files changed, 17 insertions(+), 22 deletions(-)
+
 diff --git a/include/rex/system/xam/user_profile.h b/include/rex/system/xam/user_profile.h
 index ec37017..a2e219a 100644
 --- a/include/rex/system/xam/user_profile.h
@@ -87,3 +106,6 @@ index 8778066..bd46b6d 100644
    return X_ERROR_SUCCESS;
  }
  
+-- 
+2.43.0
+

@@ -1,8 +1,8 @@
-From 7877fde7913871469fb8e07d38775cbe4ab55d49 Mon Sep 17 00:00:00 2001
+From 4b582cebf2fdfa4c526fa29f3f5e87242b9e5641 Mon Sep 17 00:00:00 2001
 From: Oleksii Horchynskyi <pan.alexeu@gmail.com>
 Date: Sun, 22 Nov 2026 16:52:23 +0200
-Subject: [PATCH] deko3d: merge a depth target into its resolved texture again
- after a full clear and new draws (solo_tras_borrado)
+Subject: [PATCH 20/20] deko3d: merge a depth target into its resolved texture
+ again after a full clear and new draws (solo_tras_borrado)
 
 A copy-path depth resolve whose target is then fully depth-cleared (the first-person weapon's pass) is marked; a
 pass sampling the texture after new draws on the target can merge the target in (nearer wins) with

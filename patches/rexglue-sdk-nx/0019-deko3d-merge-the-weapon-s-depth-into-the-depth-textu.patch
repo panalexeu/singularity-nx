@@ -1,8 +1,8 @@
-From 3ca2325a25d9cf0ec99336f0e5e5d1eed3b0eee0 Mon Sep 17 00:00:00 2001
+From c4ddc3d4e731baa3b78fe5537d1a9317f8ad01d9 Mon Sep 17 00:00:00 2001
 From: Oleksii Horchynskyi <pan.alexeu@gmail.com>
 Date: Sun, 22 Nov 2026 16:25:28 +0200
-Subject: [PATCH] deko3d: merge the weapon's depth into the depth texture a
- pass samples (FusionarProfundidadEn), not the last depth resolve
+Subject: [PATCH 19/20] deko3d: merge the weapon's depth into the depth texture
+ a pass samples (FusionarProfundidadEn), not the last depth resolve
 
 FusionarProfundidadPosterior merged into the texture of the last depth resolve done by copying. A shadow map
 resolved after the scene depth (any depth target under 720 wide is 720 tall, so its resolve is never "the whole

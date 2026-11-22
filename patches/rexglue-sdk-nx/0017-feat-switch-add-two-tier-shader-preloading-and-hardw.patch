@@ -1,0 +1,340 @@
+From 8171ad1dfeef6c1f805dc204a2ed74e5efbc7bf6 Mon Sep 17 00:00:00 2001
+From: Oleksii Horchynskyi <pan.alexeu@gmail.com>
+Date: Thu, 19 Nov 2026 13:20:55 +0200
+Subject: [PATCH 17/20] feat(switch): add two-tier shader preloading and
+ hardware gyro aiming
+
+---
+ include/rex/ui/deko3d/cache_dksh.h       |   2 +
+ include/rex/x360/deko/render.h           |   1 +
+ include/rex/x360/destinos.h              |   2 +
+ src/input/switch/switch_input_driver.cpp | 157 ++++++++++++++++++++++-
+ src/ui/deko3d/cache_dksh.cpp             |  37 ++++++
+ src/x360/deko/dibujos.cpp                |  31 +++++
+ 6 files changed, 228 insertions(+), 2 deletions(-)
+
+diff --git a/include/rex/ui/deko3d/cache_dksh.h b/include/rex/ui/deko3d/cache_dksh.h
+index d253a53..e8b0deb 100644
+--- a/include/rex/ui/deko3d/cache_dksh.h
++++ b/include/rex/ui/deko3d/cache_dksh.h
+@@ -59,6 +59,8 @@ class CacheDksh {
+   // nullptr if it is not there. Valid until the next Anadir or Cargar.
+   const std::vector<uint8_t>* Buscar(const Clave& clave) const;
+   void Anadir(const Clave& clave, std::vector<uint8_t> dksh);
++  // Preloads all entries from the indexed file whose clave.huella is in huellas.
++  void PrecargarHuellas(std::span<const uint64_t> huellas);
+   size_t size() const { return entradas_.size() + indice_.size(); }
+   // Entries read from the file so far (CargarIndice), and the time it took: the first use of each one.
+   uint64_t lecturas() const { return lecturas_.load(std::memory_order_relaxed); }
+diff --git a/include/rex/x360/deko/render.h b/include/rex/x360/deko/render.h
+index 01a2281..f6ad1e0 100644
+--- a/include/rex/x360/deko/render.h
++++ b/include/rex/x360/deko/render.h
+@@ -183,6 +183,7 @@ class RenderDk final : public DestinosNativos {
+   bool Dibujar(const PeticionDibujo& peticion) override;  // nfsmw_dk_dibujos.cpp
+   void PedirVolcado() override { volcado_pedido_ = true; }
+   bool FusionarProfundidadPosterior() override;
++  void PrecargarShaders(std::span<const EntradaShader* const> entradas) override;
+   void PrimerosUsos(uint64_t& lecturas, uint64_t& nanosegundos) const override;
+   EstadisticasDibujos EstadisticasDeDibujos() const override;
+   void EsperarSubidas() override {}  // vertices are copied on the ring thread, before Dibujar returns
+diff --git a/include/rex/x360/destinos.h b/include/rex/x360/destinos.h
+index 4847b19..fb8c43a 100644
+--- a/include/rex/x360/destinos.h
++++ b/include/rex/x360/destinos.h
+@@ -121,6 +121,8 @@ class DestinosNativos {
+   // larger value): what was drawn there after the resolve (a first-person weapon after its own depth clear) reaches
+   // the post-processing that samples the texture. false if there was nothing to merge.
+   virtual bool FusionarProfundidadPosterior() { return false; }
++  // Preloads the given shaders into the backend (DKSH cache / GPU preparation).
++  virtual void PrecargarShaders(std::span<const EntradaShader* const> entradas) { (void)entradas; }
+   // First uses so far: compiled shaders read from the card, and the time spent (reading them and preparing each shader
+   // the first time). For telling whether a long frame was waiting for shaders.
+   virtual void PrimerosUsos(uint64_t& lecturas, uint64_t& nanosegundos) const {
+diff --git a/src/input/switch/switch_input_driver.cpp b/src/input/switch/switch_input_driver.cpp
+index ef1c632..54e7c48 100644
+--- a/src/input/switch/switch_input_driver.cpp
++++ b/src/input/switch/switch_input_driver.cpp
+@@ -56,6 +56,27 @@ REXCVAR_DEFINE_BOOL(input_xbox_layout, false, "Input",
+                     "Face buttons by position, as on an Xbox pad (the bottom button, B, acts as A). "
+                     "false = by letter: A accepts and B goes back");
+ 
++// Motion (gyro) aiming: the controller's gyroscope adds to the right stick, so
++// turning or tilting the console (or the right Joy-Con, or a Pro Controller) moves the camera and the aim.
++// Rotation about the gravity axis turns the camera; tilting it about its own left-right axis looks up and down.
++// 0 = off, 1 = while aiming (ZL held), 2 = always on.
++// By default, always active while aiming (ZL held).
++REXCVAR_DEFINE_INT32(input_gyro, 1, "Input",
++                     "Gyro aiming: 0 = off, 1 = while ZL (aim / zoom) is held, 2 = always")
++    .range(0, 2);
++REXCVAR_DEFINE_DOUBLE(input_gyro_sensitivity, 1.0, "Input",
++                      "Gyro aiming speed: the right stick is fully pushed at 120 / sensitivity degrees per second "
++                      "of controller rotation")
++    .range(0.1, 5.0);
++REXCVAR_DEFINE_DOUBLE(input_gyro_deadzone, 1.5, "Input",
++                      "Gyro aiming: rotation slower than this many degrees per second is ignored (hand tremor, "
++                      "sensor drift)");
++REXCVAR_DEFINE_INT32(input_gyro_min_stick, 9500, "Input",
++                     "Gyro aiming: first stick value past the deadzone, so small motions get past the game's own "
++                     "stick deadzone (0-32767)");
++REXCVAR_DEFINE_BOOL(input_gyro_invert_x, false, "Input", "Gyro aiming: invert left/right");
++REXCVAR_DEFINE_BOOL(input_gyro_invert_y, false, "Input", "Gyro aiming: invert up/down");
++
+ namespace rex::ui {
+ // rex/ui/overlay/debug_overlay.h (not included here because it pulls in ImGui).
+ bool DebugOverlayAbierto();
+@@ -65,6 +86,120 @@ namespace rex::input::nx {
+ 
+ namespace {
+ 
++struct GyroState {
++  std::array<HidSixAxisSensorHandle, 2> handles{};
++  int count = 0;
++  int use = 0;
++  HidNpadIdType npad_id = HidNpadIdType_No1;
++  uint32_t style = 0;
++  bool failed_logged = false;
++  float up_x = 0.0f, up_y = 0.0f, up_z = 1.0f;
++  bool up_valid = false;
++  float yaw = 0.0f, pitch = 0.0f;
++};
++
++void ApplyGyro(GyroState& g, HidNpadIdType slot_npad, bool active_handheld, bool aiming, int16_t& rx, int16_t& ry) {
++  const int32_t mode = REXCVAR_GET(input_gyro);
++  if (mode == 0) {
++    if (g.count) {
++      for (int i = 0; i < g.count; ++i) hidStopSixAxisSensor(g.handles[i]);
++      g.count = 0;
++    }
++    return;
++  }
++
++  HidNpadIdType npad_id = slot_npad;
++  uint32_t style = 0;
++  int count = 0, use = 0;
++  if (slot_npad == HidNpadIdType_No1 && active_handheld) {
++    npad_id = HidNpadIdType_Handheld;
++    style = HidNpadStyleTag_NpadHandheld;
++    count = 1;
++  } else {
++    const uint32_t attached = hidGetNpadStyleSet(npad_id);
++    if (attached & HidNpadStyleTag_NpadFullKey) {
++      style = HidNpadStyleTag_NpadFullKey;
++      count = 1;
++    } else if (attached & HidNpadStyleTag_NpadJoyDual) {
++      style = HidNpadStyleTag_NpadJoyDual;
++      count = 2;
++      use = 1;  // right Joy-Con: aiming hand
++    } else if (attached & HidNpadStyleTag_NpadJoyRight) {
++      style = HidNpadStyleTag_NpadJoyRight;
++      count = 1;
++    } else if (attached & HidNpadStyleTag_NpadJoyLeft) {
++      style = HidNpadStyleTag_NpadJoyLeft;
++      count = 1;
++    } else {
++      return;
++    }
++  }
++
++  if (!g.count || g.npad_id != npad_id || g.style != style) {
++    for (int i = 0; i < g.count; ++i) hidStopSixAxisSensor(g.handles[i]);
++    g.count = 0;
++    g.up_valid = false;
++    g.yaw = g.pitch = 0.0f;
++    const Result rc =
++        hidGetSixAxisSensorHandles(g.handles.data(), count, npad_id, static_cast<HidNpadStyleTag>(style));
++    if (R_FAILED(rc)) {
++      if (!g.failed_logged) {
++        g.failed_logged = true;
++        REXLOG_WARN("[gyro] no six-axis sensor for npad {} style 0x{:X}: 0x{:08X}", int(npad_id), style, rc);
++      }
++      return;
++    }
++    for (int i = 0; i < count; ++i) hidStartSixAxisSensor(g.handles[i]);
++    g.count = count;
++    g.use = use;
++    g.npad_id = npad_id;
++    g.style = style;
++    REXLOG_INFO("[gyro] six-axis sensor started for npad {} style 0x{:X} (input_gyro = {})", int(npad_id), style, mode);
++  }
++
++  HidSixAxisSensorState s{};
++  if (!hidGetSixAxisSensorStates(g.handles[g.use], &s, 1)) return;
++  const float a = std::sqrt(s.acceleration.x * s.acceleration.x + s.acceleration.y * s.acceleration.y +
++                            s.acceleration.z * s.acceleration.z);
++  if (a > 0.5f && a < 1.5f) {
++    const float k = g.up_valid ? 0.05f : 1.0f;
++    g.up_x += (s.acceleration.x / a - g.up_x) * k;
++    g.up_y += (s.acceleration.y / a - g.up_y) * k;
++    g.up_z += (s.acceleration.z / a - g.up_z) * k;
++    const float n = std::sqrt(g.up_x * g.up_x + g.up_y * g.up_y + g.up_z * g.up_z);
++    if (n > 0.0f) {
++      g.up_x /= n;
++      g.up_y /= n;
++      g.up_z /= n;
++    }
++    g.up_valid = true;
++  }
++  if (!g.up_valid) return;
++  const float w_x = s.angular_velocity.x * 360.0f, w_y = s.angular_velocity.y * 360.0f,
++              w_z = s.angular_velocity.z * 360.0f;  // degrees per second
++  const float yaw = w_x * g.up_x + w_y * g.up_y + w_z * g.up_z;
++  const float pitch = w_x;
++  g.yaw += (yaw - g.yaw) * 0.6f;
++  g.pitch += (pitch - g.pitch) * 0.6f;
++  if (mode == 1 && !aiming) return;
++
++  const double dz = std::max(0.0, REXCVAR_GET(input_gyro_deadzone));
++  const double full = 120.0 / std::max(0.05, REXCVAR_GET(input_gyro_sensitivity));
++  const double min_stick = std::clamp(double(REXCVAR_GET(input_gyro_min_stick)), 0.0, 32767.0);
++  const auto to_stick = [&](double rate) {
++    const double m = std::abs(rate) - dz;
++    if (m <= 0.0) return 0.0;
++    const double v = min_stick + (32767.0 - min_stick) * std::min(1.0, m / std::max(1.0, full - dz));
++    return rate < 0.0 ? -v : v;
++  };
++  double sx = to_stick(g.yaw);
++  double sy = to_stick(g.pitch);
++  if (REXCVAR_GET(input_gyro_invert_x)) sx = -sx;
++  if (REXCVAR_GET(input_gyro_invert_y)) sy = -sy;
++  rx = static_cast<int16_t>(std::clamp(double(rx) + sx, -32768.0, 32767.0));
++  ry = static_cast<int16_t>(std::clamp(double(ry) + sy, -32768.0, 32767.0));
++}
++
+ constexpr int16_t kThumbThreshold = 0x4E00;
+ constexpr uint8_t kTriggerThreshold = 0x1F;
+ constexpr uint32_t kRepeatDelayMs = 400;
+@@ -244,6 +379,8 @@ struct SwitchInputDriver::Slot {
+   bool vibration_sent = false;
+   uint16_t vibration_left = 0;
+   uint16_t vibration_right = 0;
++
++  GyroState gyro;
+ };
+ 
+ SwitchInputDriver::SwitchInputDriver(rex::ui::Window* window, size_t window_z_order)
+@@ -343,8 +480,11 @@ void SwitchInputDriver::Poll(size_t index) {
+   const HidAnalogStickState right = padGetStickPos(&slot.pad, 1);
+   gamepad.thumb_lx = ClampStickAxis(left.x);
+   gamepad.thumb_ly = ClampStickAxis(left.y);
+-  gamepad.thumb_rx = ClampStickAxis(right.x);
+-  gamepad.thumb_ry = ClampStickAxis(right.y);
++  int16_t thumb_rx = ClampStickAxis(right.x);
++  int16_t thumb_ry = ClampStickAxis(right.y);
++  ApplyGyro(slot.gyro, slot.npad_id, slot.pad.active_handheld, (held & HidNpadButton_ZL) != 0, thumb_rx, thumb_ry);
++  gamepad.thumb_rx = thumb_rx;
++  gamepad.thumb_ry = thumb_ry;
+   /*
+    * With the debug overlay open, ZL+ZR and the right stick move it (debug_overlay.cpp,
+    * on the UI thread). While ZL and ZR are held, the game sees neither those two
+@@ -471,6 +611,19 @@ void SwitchInputDriver::DispatchMenuShortcuts(Slot& slot, uint64_t held) {
+     REXLOG_INFO("atajo de menu: muestreo de pilas {}", activo ? "activo" : "apagado");
+   }
+   slot.menu_shortcuts = pilas_ahora ? (slot.menu_shortcuts | kBitPilas) : (slot.menu_shortcuts & ~kBitPilas);
++
++  // L + R + RStick toggles gyro aiming (0 <-> 2, or 1 -> 2)
++  constexpr uint64_t kToggleGyro = HidNpadButton_L | HidNpadButton_R | HidNpadButton_StickR;
++  const uint64_t kBitGyro = uint64_t(1) << 10;
++  const bool gyro_ahora = (held & kToggleGyro) == kToggleGyro;
++  const bool gyro_antes = (slot.menu_shortcuts & kBitGyro) != 0;
++  if (gyro_ahora && !gyro_antes) {
++    const int32_t current = REXCVAR_GET(input_gyro);
++    const int32_t nuevo = (current == 0) ? 2 : 0;
++    REXCVAR_SET(input_gyro, nuevo);
++    REXLOG_INFO("atajo de menu: punteria giroscopica {}", nuevo ? "ACTIVADA (siempre)" : "APAGADA");
++  }
++  slot.menu_shortcuts = gyro_ahora ? (slot.menu_shortcuts | kBitGyro) : (slot.menu_shortcuts & ~kBitGyro);
+ }
+ 
+ SwitchInputDriver::Slot* SwitchInputDriver::FindSlot(DeviceId id) {
+diff --git a/src/ui/deko3d/cache_dksh.cpp b/src/ui/deko3d/cache_dksh.cpp
+index 2160f12..6086500 100644
+--- a/src/ui/deko3d/cache_dksh.cpp
++++ b/src/ui/deko3d/cache_dksh.cpp
+@@ -199,4 +199,41 @@ void CacheDksh::Anadir(const Clave& clave, std::vector<uint8_t> dksh) {
+   entradas_[clave] = std::move(dksh);
+ }
+ 
++void CacheDksh::PrecargarHuellas(std::span<const uint64_t> huellas) {
++  std::lock_guard<std::mutex> lock(mutex_);
++  if (!archivo_ || huellas.empty()) return;
++
++  std::vector<const EnArchivo*> por_leer;
++  for (uint64_t huella : huellas) {
++    Clave c_inicio{huella, 0, 0};
++    auto it = std::lower_bound(indice_.begin(), indice_.end(), c_inicio,
++                               [](const EnArchivo& a, const Clave& c) { return a.clave.huella < c.huella; });
++    for (; it != indice_.end() && it->clave.huella == huella; ++it) {
++      if (entradas_.find(it->clave) == entradas_.end()) {
++        por_leer.push_back(&*it);
++      }
++    }
++  }
++
++  if (por_leer.empty()) return;
++
++  std::sort(por_leer.begin(), por_leer.end(),
++            [](const EnArchivo* a, const EnArchivo* b) { return a->posicion < b->posicion; });
++
++  const auto inicio = std::chrono::steady_clock::now();
++  uint64_t leidas = 0;
++  for (const EnArchivo* e : por_leer) {
++    if (entradas_.find(e->clave) != entradas_.end()) continue;
++    std::vector<uint8_t> dksh(e->bytes);
++    if (std::fseek(archivo_, long(e->posicion), SEEK_SET) == 0 &&
++        std::fread(dksh.data(), 1, dksh.size(), archivo_) == dksh.size()) {
++      entradas_.emplace(e->clave, std::move(dksh));
++      ++leidas;
++    }
++  }
++  const auto dur = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - inicio).count();
++  lecturas_.fetch_add(leidas, std::memory_order_relaxed);
++  lecturas_ns_.fetch_add(uint64_t(dur), std::memory_order_relaxed);
++}
++
+ }  // namespace rex::deko3d
+diff --git a/src/x360/deko/dibujos.cpp b/src/x360/deko/dibujos.cpp
+index cabb2dc..2eb6844 100644
+--- a/src/x360/deko/dibujos.cpp
++++ b/src/x360/deko/dibujos.cpp
+@@ -1090,6 +1090,37 @@ void RenderDk::RecogerCompilaciones() {
+   }
+ }
+ 
++void RenderDk::PrecargarShaders(std::span<const EntradaShader* const> entradas) {
++  if (entradas.empty()) return;
++  const uint64_t inicio = deko::AhoraNs();
++  std::vector<uint64_t> huellas;
++  huellas.reserve(entradas.size());
++
++  for (const EntradaShader* e : entradas) {
++    if (!e || e->spirv.empty()) continue;
++    InfoShader& info = InfoDe(*e);
++    if (info.huella) {
++      huellas.push_back(info.huella);
++    }
++  }
++
++  cache_.PrecargarHuellas(huellas);
++
++  size_t preparados = 0;
++  for (const EntradaShader* e : entradas) {
++    if (!e || e->spirv.empty()) continue;
++    if (e->vertices) {
++      if (ShaderDe(*e, 0, kTodasLasSalidas, 0)) ++preparados;
++    } else {
++      if (ShaderDe(*e, 0, 0, 0)) ++preparados;
++    }
++  }
++
++  const double ms = double(deko::AhoraNs() - inicio) / 1e6;
++  REXLOG_INFO("[deko3d] precarga: {} shaders ({} preparados en GPU) en {:.1f} ms",
++              entradas.size(), preparados, ms);
++}
++
+ // ---- The draw
+ 
+ bool RenderDk::Dibujar(const PeticionDibujo& p) {
+-- 
+2.43.0
+
